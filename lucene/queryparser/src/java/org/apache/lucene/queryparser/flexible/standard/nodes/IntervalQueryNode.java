@@ -13,14 +13,16 @@ import org.apache.lucene.search.Query;
 public class IntervalQueryNode extends QueryNodeImpl implements FieldableNode {
   private final IntervalFunction source;
   private String field;
+  private Analyzer analyzer;
 
   public IntervalQueryNode(String field, IntervalFunction source) {
     this.field = field;
     this.source = Objects.requireNonNull(source);
   }
 
-  public Query getQuery(Analyzer analyzer) {
+  public Query getQuery() {
     Objects.requireNonNull(field, "Field must not be null for interval queries.");
+    Objects.requireNonNull(analyzer, "Analyzer must not be null for interval queries.");
     return new IntervalQuery(field, source.toIntervalSource(field, analyzer));
   }
 
@@ -47,5 +49,10 @@ public class IntervalQueryNode extends QueryNodeImpl implements FieldableNode {
   @Override
   public IntervalQueryNode cloneTree() {
     return new IntervalQueryNode(field, source);
+  }
+
+  public void setAnalyzer(Analyzer analyzer) {
+    this.analyzer =
+        Objects.requireNonNull(analyzer, "Analyzer must not be null for interval queries.");
   }
 }
