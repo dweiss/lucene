@@ -16,8 +16,7 @@
  */
 
 /** Lucene index files replication utility */
-// @SuppressWarnings({"requires-automatic"})
-/*
+@SuppressWarnings({"requires-automatic"})
 module org.apache.lucene.replicator {
   requires javax.servlet.api;
   requires org.apache.httpcomponents.httpclient;
@@ -29,4 +28,3 @@ module org.apache.lucene.replicator {
   exports org.apache.lucene.replicator.nrt;
 
 }
-*/

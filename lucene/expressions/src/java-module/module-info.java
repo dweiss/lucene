@@ -15,26 +15,16 @@
  * limitations under the License.
  */
 
-apply plugin: 'java-library'
+@SuppressWarnings({"requires-automatic"})
+module org.apache.lucene.expressions {
+  requires org.objectweb.asm;
+  requires org.objectweb.asm.commons;
+  requires antlr4.runtime;
+  requires org.apache.lucene.core;
+  requires org.apache.lucene.codecs;
 
-description = 'Dynamically computed values to sort/facet/search on based on a pluggable grammar'
+  exports org.apache.lucene.expressions;
+  exports org.apache.lucene.expressions.js;
 
-dependencies {
-  api project(':lucene:core')
-
-  implementation project(':lucene:codecs')
-
-  implementation 'org.antlr:antlr4-runtime'
-
-  // It is awkward that we force-omit the intermediate dependency here...
-  // The dependency chain is:
-  //   asm-commons -> asm-tree -> asm
-  // Should we really go through these hoops?
-  implementation 'org.ow2.asm:asm'
-  implementation('org.ow2.asm:asm-commons', {
-    // exclude group: "org.ow2.asm", module: "asm-tree"
-    // exclude group: "org.ow2.asm", module: "asm-analysis"
-  })
-
-  testImplementation project(':lucene:test-framework')
 }
+

@@ -16,9 +16,9 @@
  */
 
 /** Geospatial search */
-// @SuppressWarnings({"requires-automatic"})
-/*
+@SuppressWarnings({"requires-automatic"})
 module org.apache.lucene.spatial_extras {
+  requires java.logging;
   requires spatial4j;
   requires s2.geometry.library.java;
   requires org.apache.lucene.core;
@@ -36,4 +36,3 @@ module org.apache.lucene.spatial_extras {
   exports org.apache.lucene.spatial.vector;
 
 }
-*/

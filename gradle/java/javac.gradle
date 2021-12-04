@@ -85,3 +85,23 @@ allprojects {
     }
   }
 }
+
+// Replace the module path with the classpath for modules that depends on third party libraries
+// that does not support JMS (unnamed jars) so that Gradle can look up the dependencies.
+// This should be a transitional method until the libraries support JMS with proper (manual or automatic) module names.
+configure(subprojects.findAll {it.path in [
+  ":lucene:analysis:morfologik",
+  ":lucene:expressions",
+  ":lucene:replicator",
+  ":lucene:spatial-extras"
+] }) {
+  plugins.withType(JavaPlugin) {
+    tasks.withType(JavaCompile) {
+      doFirst {
+        options.compilerArgs += [
+          "--module-path", classpath.asPath
+        ]
+      }
+    }
+  }
+}
