@@ -346,7 +346,7 @@ public class TestModularLayer {
             .resolve(
                 allModulesFinder,
                 ModuleFinder.of(),
-                allModules.stream()
+                allCoreModules.stream()
                     .map(module -> module.descriptor().name())
                     .filter(name -> !excludeCoreModules.contains(name))
                     .collect(Collectors.toSet()));
