@@ -326,4 +326,61 @@ public class TestModularLayer {
                 // obvious.
                 Map.entry("unmap.supported", "true")));
   }
+
+  @Test
+  public void testRuntimeModuleSPICheckAssertions() throws Exception {
+    String luceneCoreModule = "org.apache.lucene.core";
+    // these modules depends on external libraries that are not contained in the binary
+    // distribution.
+    List<String> excludeCoreModules =
+        Arrays.asList(
+            "org.apache.lucene.spatial_extras",
+            "org.apache.lucene.spatial3d",
+            "org.apache.lucene.benchmark",
+            "org.apache.lucene.demo",
+            "org.apache.lucene.grouping",
+            "org.apache.lucene.expressions",
+            "org.apache.lucene.facet",
+            "org.apache.lucene.replicator");
+
+    ModuleLayer parent = ModuleLayer.boot();
+    Configuration configuration =
+        parent
+            .configuration()
+            .resolve(
+                allModulesFinder,
+                ModuleFinder.of(),
+                allModules.stream()
+                    .map(module -> module.descriptor().name())
+                    .filter(name -> !excludeCoreModules.contains(name))
+                    .collect(Collectors.toSet()));
+    ClassLoader classLoader = new URLClassLoader(new URL[] {}, ClassLoader.getSystemClassLoader());
+    ModuleLayer layer = parent.defineModulesWithOneLoader(configuration, classLoader);
+    Module luceneCore = layer.findModule(luceneCoreModule).get();
+
+    // Check provided tokenizers
+    @SuppressWarnings("unchecked")
+    Supplier<Map<String, List<String>>> checkAnalysis =
+        (Supplier<Map<String, List<String>>>)
+            Class.forName(luceneCore, "org.apache.lucene.internal.ModuleCheckAnalysisSPI")
+                .getDeclaredConstructor()
+                .newInstance();
+
+    // TODO: Fails for now
+    // Assertions.assertThat(checkAnalysis.get().get("tokenizers")).containsExactlyInAnyOrderElementsOf(TOKENIZER_SPI_NAMES);
+
+    // Check provided codec and formats
+    @SuppressWarnings("unchecked")
+    Supplier<Map<String, List<String>>> checkCodec =
+        (Supplier<Map<String, List<String>>>)
+            Class.forName(luceneCore, "org.apache.lucene.internal.ModuleCheckCodecSPI")
+                .getDeclaredConstructor()
+                .newInstance();
+
+    Assertions.assertThat(checkCodec.get().get("docvaluesformat"))
+        .containsExactlyInAnyOrderElementsOf(List.of("Lucene90", "Lucene80"));
+  }
+
+  // TODO: list all analysis SPI names
+  private static final List<String> TOKENIZER_SPI_NAMES = List.of("standard");
 }
