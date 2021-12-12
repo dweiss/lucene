@@ -19,8 +19,6 @@ import java.util.function.Predicate
 
 // Configure miscellaneous aspects required for supporting the java module system layer.
 
-// TODO: remove the hacks excluding java-module source folder from ecjLint and javadoc rendering.
-
 allprojects {
   plugins.withType(JavaPlugin) {
     // We won't be using gradle's built-in automatic module finder.

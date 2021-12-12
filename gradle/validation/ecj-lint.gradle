@@ -36,8 +36,8 @@ allprojects {
     // attached to project's "ecjLint" task.
     def lintTasks = sourceSets.collect { sourceSet ->
       def srcDirs = sourceSet.java.sourceDirectories
-          .findAll { dir -> dir.exists() }
-          .findAll { dir -> dir.name != "java-module" }
+          .filter { dir -> dir.exists() }
+          .filter { dir -> dir.name != "java-module" }
 
       tasks.create(sourceSet.getTaskName("ecjLint", null), JavaExec, {JavaExec task ->
         // This dependency is on a configuration; technically it causes
@@ -67,7 +67,10 @@ allprojects {
         // encounters a module-info.java file it no longer compiles other source files.
         def inputsFile = file("${tmpDst}/ecj-inputs.txt")
         inputsFile.setText(
-            sourceSet.java.files.collect {file -> file.absolutePath.toString()}.join("\n"), "UTF-8")
+            srcDirs.collectMany { dir ->
+              project.fileTree(dir: dir, include: "**/*.java" ).files
+            }
+            .collect {file -> file.absolutePath.toString()}.join("\n"), "UTF-8")
 
         args += [ "-d", "none" ]
 
@@ -105,7 +108,7 @@ allprojects {
           def cpath = sourceSet.compileClasspath.filter { p -> p.exists() }
           cpath = cpath - modularPathFiles
           if (!cpath.isEmpty()) {
-            args += ["-classpath", cpath.join(File.pathSeparator)]
+            extraArgs += ["-classpath", cpath.join(File.pathSeparator)]
           }
 
           // Add source location(s) in an external file to avoid command line argument limits.
