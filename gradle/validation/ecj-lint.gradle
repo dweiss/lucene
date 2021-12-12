@@ -37,7 +37,6 @@ allprojects {
     def lintTasks = sourceSets.collect { sourceSet ->
       def srcDirs = sourceSet.java.sourceDirectories
           .filter { dir -> dir.exists() }
-          .filter { dir -> dir.name != "java-module" }
 
       tasks.create(sourceSet.getTaskName("ecjLint", null), JavaExec, {JavaExec task ->
         // This dependency is on a configuration; technically it causes
