@@ -15,8 +15,6 @@
  * limitations under the License.
  */
 
-import java.util.function.Predicate
-
 // Configure miscellaneous aspects required for supporting the java module system layer.
 
 allprojects {
