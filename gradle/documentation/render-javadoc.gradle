@@ -463,6 +463,17 @@ class RenderJavadocTask extends DefaultTask {
         }.collect { it.toString() }
     )
 
+    // handle doc-files manually since in explicit source file mode javadoc does not copy them.
+    srcDirs.each { File dir ->
+      project.copy {
+        into outputDir
+
+        from(dir, {
+          include "**/doc-files/**"
+        })
+      }
+    }
+
     // Temporary file that holds all javadoc options for the current task (except jOpts)
     optionsFile.withWriter("UTF-8", { writer ->
       // escapes an option with single quotes or whitespace to be passed in the options.txt file for
