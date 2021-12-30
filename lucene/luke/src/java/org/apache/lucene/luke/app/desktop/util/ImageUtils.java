@@ -28,7 +28,7 @@ public class ImageUtils {
   }
 
   public static ImageIcon createImageIcon(String name, String description, int width, int height) {
-    java.net.URL imgURL = ImageUtils.class.getResource(name);
+    java.net.URL imgURL = ImageUtils.class.getClassLoader().getResource(IMAGE_BASE_DIR + name);
     if (imgURL != null) {
       ImageIcon originalIcon = new ImageIcon(imgURL, description);
       ImageIcon icon =

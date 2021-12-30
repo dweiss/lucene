@@ -20,6 +20,7 @@ import java.io.IOException;
 import java.io.Reader;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
+import java.util.Objects;
 import morfologik.stemming.Dictionary;
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.analysis.CharArraySet;
@@ -99,12 +100,13 @@ public final class UkrainianMorfologikAnalyzer extends StopwordAnalyzerBase {
               dictionary = Dictionary.read(fsaStream, metaStream);
             }
           } else {
-            var name = "ua/net/nlp/ukrainian.dict";
             dictionary =
                 Dictionary.read(
-                    IOUtils.requireResourceNonNull(
-                        UkrainianMorfologikAnalyzer.class.getClassLoader().getResource(name),
-                        name));
+                    Objects.requireNonNull(
+                        UkrainianMorfologikAnalyzer.class
+                            .getClassLoader()
+                            .getResource("ua/net/nlp/ukrainian.dict"),
+                        "Could not locate the required Ukrainian dictionary resource."));
           }
           defaultResources = new DefaultResources(wordList, dictionary);
         } catch (IOException e) {

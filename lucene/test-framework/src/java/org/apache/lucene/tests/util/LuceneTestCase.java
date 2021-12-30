@@ -62,7 +62,6 @@ import java.lang.annotation.Target;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.net.URI;
-import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.FileSystem;
 import java.nio.file.NoSuchFileException;
@@ -98,6 +97,7 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.Logger;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import junit.framework.AssertionFailedError;
@@ -152,7 +152,6 @@ import org.apache.lucene.util.Bits;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.CommandLineUtil;
 import org.apache.lucene.util.Constants;
-import org.apache.lucene.util.IOUtils;
 import org.apache.lucene.util.InfoStream;
 import org.apache.lucene.util.NamedThreadFactory;
 import org.apache.lucene.util.SuppressForbidden;
@@ -555,13 +554,14 @@ public abstract class LuceneTestCase extends Assert {
       if (maxFailures == Integer.MAX_VALUE) {
         maxFailures = 1;
       } else {
-        System.err.println(
-            "Property '"
-                + SYSPROP_MAXFAILURES
-                + "'="
-                + maxFailures
-                + ", 'failfast' is"
-                + " ignored.");
+        Logger.getLogger(LuceneTestCase.class.getSimpleName())
+            .warning(
+                "Property '"
+                    + SYSPROP_MAXFAILURES
+                    + "'="
+                    + maxFailures
+                    + ", 'failfast' is"
+                    + " ignored.");
       }
     }
 
@@ -576,6 +576,7 @@ public abstract class LuceneTestCase extends Assert {
    */
   static {
     TestRuleLimitSysouts.checkCaptureStreams();
+    Logger.getGlobal().getHandlers();
   }
 
   /**
@@ -2056,16 +2057,19 @@ public abstract class LuceneTestCase extends Assert {
    */
   protected Path getDataPath(String name) throws IOException {
     try {
-      return Paths.get(
-          IOUtils.requireResourceNonNull(this.getClass().getResource(name), name).toURI());
-    } catch (URISyntaxException e) {
-      throw new AssertionError(e);
+      return Paths.get(this.getClass().getResource(name).toURI());
+    } catch (Exception e) {
+      throw new IOException("Cannot find resource: " + name, e);
     }
   }
 
   /** Gets a resource from the test's classpath as {@link InputStream}. */
   protected InputStream getDataInputStream(String name) throws IOException {
-    return IOUtils.requireResourceNonNull(this.getClass().getResourceAsStream(name), name);
+    InputStream in = this.getClass().getResourceAsStream(name);
+    if (in == null) {
+      throw new IOException("Cannot find resource: " + name);
+    }
+    return in;
   }
 
   public void assertReaderEquals(String info, IndexReader leftReader, IndexReader rightReader)

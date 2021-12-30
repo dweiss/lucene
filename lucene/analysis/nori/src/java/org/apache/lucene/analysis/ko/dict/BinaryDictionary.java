@@ -178,8 +178,11 @@ public abstract class BinaryDictionary implements Dictionary {
   }
 
   private static InputStream getClassResource(String path) throws IOException {
-    return IOUtils.requireResourceNonNull(
-        BinaryDictionary.class.getClassLoader().getResourceAsStream(path), path);
+    final InputStream is = BinaryDictionary.class.getClassLoader().getResourceAsStream(path);
+    if (is == null) {
+      throw new FileNotFoundException("Not in classpath: " + path);
+    }
+    return is;
   }
 
   public void lookupWordIds(int sourceId, IntsRef ref) {

@@ -71,27 +71,20 @@ public abstract class StopwordAnalyzerBase extends Analyzer {
    * @param comment comment string to ignore in the stopword file
    * @return a CharArraySet containing the distinct stopwords from the given file
    * @throws IOException if loading the stopwords throws an {@link IOException}
-   * @deprecated {@link Class#getResourceAsStream(String)} is caller sensitive and cannot load
-   *     resources across Java Modules. Please call the {@code getResourceAsStream()} and {@link
-   *     WordlistLoader#getWordSet(Reader, String, CharArraySet)} or other methods directly.
    */
-  @Deprecated(forRemoval = true, since = "9.1")
   protected static CharArraySet loadStopwordSet(
       final boolean ignoreCase,
       final Class<? extends Analyzer> aClass,
       final String resource,
       final String comment)
       throws IOException {
-    var argModule = aClass.getModule();
-    if (argModule.isNamed() && argModule != StopwordAnalyzerBase.class.getModule()) {
-      throw new UnsupportedOperationException(
-          "loadStopwordSet(class,...) does not work when Java Module System is enabled.");
-    }
-    try (Reader reader =
-        IOUtils.getDecodingReader(
-            IOUtils.requireResourceNonNull(aClass.getResourceAsStream(resource), resource),
-            StandardCharsets.UTF_8)) {
+    Reader reader = null;
+    try {
+      reader =
+          IOUtils.getDecodingReader(aClass.getResourceAsStream(resource), StandardCharsets.UTF_8);
       return WordlistLoader.getWordSet(reader, comment, new CharArraySet(16, ignoreCase));
+    } finally {
+      IOUtils.close(reader);
     }
   }
 
@@ -103,8 +96,12 @@ public abstract class StopwordAnalyzerBase extends Analyzer {
    * @throws IOException if loading the stopwords throws an {@link IOException}
    */
   protected static CharArraySet loadStopwordSet(Path stopwords) throws IOException {
-    try (Reader reader = Files.newBufferedReader(stopwords, StandardCharsets.UTF_8)) {
+    Reader reader = null;
+    try {
+      reader = Files.newBufferedReader(stopwords, StandardCharsets.UTF_8);
       return WordlistLoader.getWordSet(reader);
+    } finally {
+      IOUtils.close(reader);
     }
   }
 

@@ -53,10 +53,7 @@ public final class RussianAnalyzer extends StopwordAnalyzerBase {
         DEFAULT_STOP_SET =
             WordlistLoader.getSnowballWordSet(
                 IOUtils.getDecodingReader(
-                    IOUtils.requireResourceNonNull(
-                        SnowballFilter.class.getResourceAsStream(DEFAULT_STOPWORD_FILE),
-                        DEFAULT_STOPWORD_FILE),
-                    StandardCharsets.UTF_8));
+                    SnowballFilter.class, DEFAULT_STOPWORD_FILE, StandardCharsets.UTF_8));
       } catch (IOException ex) {
         // default set should always be present as it is part of the
         // distribution (JAR)

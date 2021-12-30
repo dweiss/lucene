@@ -23,6 +23,7 @@ import java.nio.ByteBuffer;
 import org.apache.lucene.codecs.CodecUtil;
 import org.apache.lucene.store.DataInput;
 import org.apache.lucene.store.InputStreamDataInput;
+import org.apache.lucene.util.IOUtils;
 
 /** n-gram connection cost data */
 public final class ConnectionCosts {
@@ -39,9 +40,11 @@ public final class ConnectionCosts {
    * @param path - where to load resources from, without the ".dat" suffix
    */
   public ConnectionCosts(BinaryDictionary.ResourceScheme scheme, String path) throws IOException {
-    try (InputStream is =
-        new BufferedInputStream(
-            BinaryDictionary.getResource(scheme, path.replace('.', '/') + FILENAME_SUFFIX))) {
+    InputStream is = null;
+    boolean success = false;
+    try {
+      is = BinaryDictionary.getResource(scheme, path.replace('.', '/') + FILENAME_SUFFIX);
+      is = new BufferedInputStream(is);
       final DataInput in = new InputStreamDataInput(is);
       CodecUtil.checkHeader(in, HEADER, VERSION, VERSION);
       forwardSize = in.readVInt();
@@ -58,6 +61,13 @@ public final class ConnectionCosts {
         }
       }
       buffer = tmpBuffer.asReadOnlyBuffer();
+      success = true;
+    } finally {
+      if (success) {
+        IOUtils.close(is);
+      } else {
+        IOUtils.closeWhileHandlingException(is);
+      }
     }
   }
 
