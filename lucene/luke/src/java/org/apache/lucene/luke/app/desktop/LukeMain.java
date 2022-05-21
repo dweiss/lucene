@@ -72,9 +72,14 @@ public class LukeMain {
   public static void main(String[] args) throws Exception {
     boolean sanityCheck = Arrays.asList(args).contains("--sanity-check");
 
-    if (sanityCheck && GraphicsEnvironment.isHeadless()) {
-      Logger.getGlobal().log(Level.SEVERE, "[Vader] Hello, Luke. Can't do much in headless mode.");
-      Runtime.getRuntime().exit(0);
+    if (sanityCheck) {
+      if (GraphicsEnvironment.isHeadless()) {
+        Logger.getGlobal()
+            .log(Level.SEVERE, "[Vader] Hello, Luke. Can't do much in headless mode.");
+        Runtime.getRuntime().exit(0);
+      } else {
+        Logger.getGlobal().log(Level.SEVERE, "[sanity check] entered main.");
+      }
     }
 
     String lookAndFeelClassName = UIManager.getSystemLookAndFeelClassName();

@@ -33,7 +33,7 @@ REM This is required because otherwise we can't block on luke invocation and can
 REM the return status. We also force UTF-8 encoding so that we don't have to interpret the output in
 REM an unknown local platform encoding.
 SET LAUNCH_START=
-SET LAUNCH_OPTS=-Dfile.encoding=UTF-8
+SET LAUNCH_OPTS=-Dfile.encoding=UTF-8 -verbose
 
 :launch
 %LAUNCH_START% "%LAUNCH_CMD%" %LAUNCH_OPTS% --module-path "%MODULES%\modules;%MODULES%\modules-thirdparty" --module org.apache.lucene.luke %*
