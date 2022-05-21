@@ -37,5 +37,29 @@ jobs:
     - name: Initialize gradle settings (${{ matrix.os }})
       run: ./gradlew localSettings
 
-    - name: Run all distribution tests including GUI tests (${{ matrix.os }})
+    - name: Run all distribution tests including GUI tests 1 (${{ matrix.os }})
+      run: ./gradlew -p lucene/distribution.tests test
+
+    - name: Run all distribution tests including GUI tests 2 (${{ matrix.os }})
+      run: ./gradlew -p lucene/distribution.tests test
+
+    - name: Run all distribution tests including GUI tests 3 (${{ matrix.os }})
+      run: ./gradlew -p lucene/distribution.tests test
+
+    - name: Run all distribution tests including GUI tests 4 (${{ matrix.os }})
+      run: ./gradlew -p lucene/distribution.tests test
+
+    - name: Run all distribution tests including GUI tests 5 (${{ matrix.os }})
+      run: ./gradlew -p lucene/distribution.tests test
+
+    - name: Run all distribution tests including GUI tests 6 (${{ matrix.os }})
+      run: ./gradlew -p lucene/distribution.tests test
+
+    - name: Run all distribution tests including GUI tests 7 (${{ matrix.os }})
+      run: ./gradlew -p lucene/distribution.tests test
+
+    - name: Run all distribution tests including GUI tests 8 (${{ matrix.os }})
+      run: ./gradlew -p lucene/distribution.tests test
+
+    - name: Run all distribution tests including GUI tests 9 (${{ matrix.os }})
       run: ./gradlew -p lucene/distribution.tests test
