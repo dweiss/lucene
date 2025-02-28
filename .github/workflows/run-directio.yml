@@ -36,5 +36,5 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/prepare-for-build
 
-      - run: ./gradlew --max-workers 2 :lucene:misc:test --tests "org.apache.lucene.misc.store.TestDirectIODirectory" -Ptests.jvms=4 -Ptests.jvmargs= -Ptests.seed=DEE483D0402DBE52 -Ptests.multiplier=2 -Ptests.useSecurityManager=true -Ptests.nightly=true -Ptests.vectorsize=512 -Ptests.forceintegervectors=true
+      - run: ./gradlew --max-workers 2 :lucene:misc:test --tests "org.apache.lucene.misc.store.TestDirectIODirectory" "-Ptests.jvms=4" "-Ptests.jvmargs=" "-Ptests.seed=DEE483D0402DBE52" "-Ptests.multiplier=2" "-Ptests.useSecurityManager=true" "-Ptests.nightly=true" "-Ptests.vectorsize=512" "-Ptests.forceintegervectors=true"
 
