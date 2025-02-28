@@ -3,15 +3,6 @@ name: "Run checks: all modules"
 on: 
   workflow_dispatch:
 
-  pull_request:
-    branches:
-      - '*'
-
-  push:
-    branches:
-      - 'main'
-      - 'branch_10x'
-
 env:
   DEVELOCITY_ACCESS_KEY: ${{ secrets.DEVELOCITY_ACCESS_KEY }}
 

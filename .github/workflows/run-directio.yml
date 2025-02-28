@@ -15,7 +15,16 @@ jobs:
 
     strategy:
       matrix:
-        os: [ ubuntu-latest ]
+        os: [ 
+          ubuntu-24.04,
+          ubuntu-22.04,
+          ubuntu-20.04,
+          windows-latest,
+          ubuntu-24.04-arm, 
+          ubuntu-22.04-arm,
+          macos-15,
+          macos-14
+        ]
         java: [ '23' ]
 
     runs-on: ${{ matrix.os }}
