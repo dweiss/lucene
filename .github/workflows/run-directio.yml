@@ -1,0 +1,31 @@
+name: "Run direct i/o checks"
+
+on: 
+  workflow_dispatch:
+
+# We split the workflow into two parallel jobs for efficiency:
+# one is running all validation checks without tests,
+# the other runs all tests without other validation checks.
+
+jobs:
+
+  # This runs all validation checks without tests.
+  checks:
+    timeout-minutes: 30
+
+    strategy:
+      matrix:
+        os: [ ubuntu-latest ]
+        java: [ '23' ]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Correct git autocrlf
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/prepare-for-build
+
+      - run: ./gradlew --max-workers 2 :lucene:misc:test --tests "org.apache.lucene.misc.store.TestDirectIODirectory" -Ptests.jvms=4 -Ptests.jvmargs= -Ptests.seed=DEE483D0402DBE52 -Ptests.multiplier=2 -Ptests.useSecurityManager=true -Ptests.nightly=true -Ptests.vectorsize=512 -Ptests.forceintegervectors=true
+
