@@ -20,7 +20,7 @@
  * spotless and Google Java Format.
  */
 
-// def resources = scriptResources(buildscript)
+def resources = scriptResources(buildscript)
 
 configure(allprojects) { prj ->
   plugins.withType(JavaPlugin) {
@@ -36,7 +36,8 @@ configure(allprojects) { prj ->
 
         lineEndings 'UNIX'
         endWithNewline()
-        googleJavaFormat(deps.versions.googleJavaFormat.get())
+        // googleJavaFormat(deps.versions.googleJavaFormat.get())
+        eclipse().configFile(file("${resources}/eclipse-java-google-style.xml"))
 
         // Apply to all Java sources
         target "src/**/*.java"
