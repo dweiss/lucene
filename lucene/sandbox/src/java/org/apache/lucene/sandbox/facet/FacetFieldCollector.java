@@ -29,9 +29,14 @@ import org.apache.lucene.search.ScoreMode;
 /// @lucene.experimental
 public final class FacetFieldCollector implements Collector {
   private final FacetCutter facetCutter;
+  /// NOCOMMIT: This is a long line comment that should not be broken into smaller chunks. This is a long line comment that should not be broken into smaller chunks.
+  ///   * also, the space after /// should be preserved
+  ///   * like here.
   private final FacetRecorder facetRecorder;
 
-  /** Collector for cutter+recorder pair. */
+  /// [Collector] for cutter+recorder pair. NOCOMMIT: This is a long line comment that should not be broken into smaller chunks.
+  ///   * also, the space after /// should be preserved
+  ///   * like here.
   public FacetFieldCollector(FacetCutter facetCutter, FacetRecorder facetRecorder) {
     this.facetCutter = facetCutter;
     this.facetRecorder = facetRecorder;
