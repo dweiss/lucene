@@ -35,7 +35,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "No changes to commit."
           else
-            git commit -m "chore: update locks and licenses after dependabot PR""
+            git commit -m "chore: update locks and licenses after dependabot PR"
             git push origin HEAD:${{ github.head_ref }}
           fi
 
