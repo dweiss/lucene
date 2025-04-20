@@ -2,7 +2,7 @@ name: Update lock file and SHAs for dependencies updated by Dependabot PR
 
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, synchronize, reopened]
     # branches: ["main"]
 
 permissions:
@@ -31,7 +31,7 @@ jobs:
 
       - name: Commit and push changes
         run: |
-          git add -A
+          git add -A .
           if git diff --cached --quiet; then
             echo "No changes to commit."
           else
