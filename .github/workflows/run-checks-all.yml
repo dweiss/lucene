@@ -41,5 +41,5 @@ jobs:
       - uses: ./.github/actions/prepare-for-build
 
       - name: Run gradle check (without tests)
-        run: ./gradlew checkLicenses checkLocks
+        run: ./gradlew validateJarLicenses checkLocks
 
