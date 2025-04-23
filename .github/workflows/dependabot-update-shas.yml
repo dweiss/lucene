@@ -39,5 +39,7 @@ jobs:
             git push origin HEAD:${{ github.head_ref }}
           fi
 
-      - uses: ./.github/workflows/run-checks-all.yml
-        secrets: inherit
+  verify-correctness:
+    needs: [ update-locks ]
+    uses: ./.github/workflows/run-checks-all.yml
+    secrets: inherit
