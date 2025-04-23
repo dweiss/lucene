@@ -1,9 +1,10 @@
-name: Update lock file and SHAs for dependencies updated by Dependabot PR
+name: dependabot PR post-update
+description: Applies writeLocks and updateLicenses to dependabot PRs.
 
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-    # branches: ["main"]
+    branches: ["main"]
 
 permissions:
   contents: write
