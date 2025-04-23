@@ -1,0 +1,43 @@
+name: Update lock file and SHAs for dependencies updated by Dependabot PR
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    # branches: ["main"]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-locks:
+    if: startsWith(github.head_ref, 'dependabot/')
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.head_ref }}
+
+      - uses: ./.github/actions/prepare-for-build
+
+      - name: Set up Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Run Gradle writeLocks
+        run: ./gradlew updateLicenses writeLocks
+
+      - name: Commit and push changes
+        run: |
+          git add -A .
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "chore: update locks and licenses after dependabot PR"
+            git push origin HEAD:${{ github.head_ref }}
+          fi
+
+      - uses: ./.github/workflows/run-checks-all.yml
+        secrets: inherit
