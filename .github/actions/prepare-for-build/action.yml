@@ -40,5 +40,5 @@ runs:
         develocity-token-expiry: 8
 
     - name: generate report
-      run: |
-          find ~/.gradle -print
+      shell: bash
+      run: find ~/.gradle -print
