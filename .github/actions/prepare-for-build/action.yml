@@ -39,5 +39,4 @@ runs:
         # https://github.com/gradle/actions/blob/main/docs/setup-gradle.md#increasing-the-expiry-time-for-develocity-access-tokens
         develocity-token-expiry: 8
 
-    - run: |
-      find ~/.gradle -print
+    - run: find ~/.gradle -print
