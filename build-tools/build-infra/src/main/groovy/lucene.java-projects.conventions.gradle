@@ -15,4 +15,12 @@
  * limitations under the License.
  */
 
-description = 'Parent project for Apache Lucene Core'
+allprojects { project ->
+  if (project.file("src/java").exists()) {
+    plugins.apply("java-library")
+
+    plugins.apply("lucene.java.folder-layout")
+    plugins.apply("lucene.java.javac")
+    plugins.apply("lucene.java.jar-manifest")
+  }
+}

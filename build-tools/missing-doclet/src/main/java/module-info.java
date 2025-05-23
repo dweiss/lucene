@@ -15,19 +15,9 @@
  * limitations under the License.
  */
 
-configure(allprojects) {
-  tasks.register("tidy").configure {
-    description "Applies formatters and cleanups to sources."
-    group "verification"
-  }
-}
-
-// Locate script-relative resource folder. This is context-sensitive so pass
-// the right buildscript (top-level).
-configure(rootProject) {
-  ext {
-    scriptResources = { buildscript ->
-      return file(buildscript.sourceFile.absolutePath.replaceAll('.gradle$', ""))
-    }
-  }
+/** Internal Lucene build tool (checks for missing javadocs). */
+module org.apache.lucene.missingdoclet {
+  requires java.compiler;
+  requires jdk.compiler;
+  requires jdk.javadoc;
 }

@@ -1,4 +1,5 @@
-import java.nio.charset.StandardCharsets
+import com.diffplug.gradle.spotless.GroovyGradleExtension
+import com.diffplug.gradle.spotless.SpotlessPlugin
 
 /*
  * Licensed to the Apache Software Foundation (ASF) under one or more
@@ -17,27 +18,27 @@ import java.nio.charset.StandardCharsets
  * limitations under the License.
  */
 
-// This ensures 'gradlew*' scripts contain the manual fix so that they
-// don't fork a daemon subprocess on the initial run.
+// Apply spotless formatter to groovy code (gradle scripts in the build-infra plugin
+// and possibly other places).
 
-configure(rootProject) {
-  task gradlewScriptsTweaked() { task ->
-    def scripts = [
-        file("gradlew"),
-        file("gradlew.bat")
-    ]
+if (project != project.rootProject) {
+  throw new GradleException("Applicable to rootProject only: " + project.path)
+}
 
-    inputs.files(scripts)
+plugins.apply(SpotlessPlugin.class)
 
-    doFirst {
-      scripts.each { file ->
-        def content = new String(file.readBytes(), StandardCharsets.US_ASCII)
-        if (content.indexOf("GradlePropertiesGenerator") < 0) {
-          throw new GradleException("Launch script ${file} does not have a tweak to generate gradle.properties.")
-        }
-      }
-    }
-  }
+spotless.format("gradleScripts", GroovyGradleExtension.class, { ext ->
+  ext.greclipse()
+  ext.leadingTabsToSpaces(2)
+  ext.trimTrailingWhitespace()
+  ext.endWithNewline()
+  ext.target("build-tools/build-infra/src/main/groovy/**/*.gradle")
+})
 
-  check.dependsOn gradlewScriptsTweaked
+tasks.named("tidy").configure {
+  dependsOn ":spotlessGradleScriptsApply"
+}
+
+tasks.named("check").configure {
+  dependsOn ":spotlessGradleScriptsCheck"
 }

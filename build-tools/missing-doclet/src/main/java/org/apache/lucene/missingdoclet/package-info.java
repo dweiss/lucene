@@ -15,36 +15,5 @@
  * limitations under the License.
  */
 
-// Adapt to custom, legacy folder convention.
-allprojects {
-  plugins.withType(JavaPlugin) {
-    sourceSets {
-      main.java.srcDirs = ['src/java']
-      main.resources.srcDirs = ['src/resources']
-      test.java.srcDirs = ['src/test']
-      test.resources.srcDirs = ['src/test-files']
-    }
-
-    tasks.named('processTestResources').configure {
-      from('src/test') {
-        exclude '**/*.java'
-      }
-    }
-
-    // if 'src/tools' exists, add it as a separate sourceSet.
-    if (file('src/tools/java').exists()) {
-      sourceSets {
-        tools {
-          java {
-            srcDirs = ['src/tools/java']
-          }
-        }
-      }
-
-      configurations {
-        // Inherit any dependencies from the main source set.
-        toolsImplementation.extendsFrom implementation
-      }
-    }
-  }
-}
+/** Lucene internal build tool for detecting missing Javadocs. */
+package org.apache.lucene.missingdoclet;
