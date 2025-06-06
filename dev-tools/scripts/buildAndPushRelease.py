@@ -144,7 +144,7 @@ def prepare(root: str, version: str, pause_before_sign: bool, gpg_key_id: str | 
         os.environ["ORG_GRADLE_PROJECT_signingPassword"] = gpg_password
     else:
       print("  Signing method is gpg tool")
-      cmd += ' -PuseGpg -Psigning.gnupg.keyName="%s"' % gpg_key_id
+      cmd += ' -PuseGpg=true -Psigning.gnupg.keyName="%s"' % gpg_key_id
       if gpg_home is not None:
         cmd += ' -Psigning.gnupg.homeDir="%s"' % gpg_home
 
@@ -238,7 +238,7 @@ def pushLocal(version: str, root: str, rcNum: int, localDir: str):
   run("chmod -R a+rX-w .")
 
   print("  done!")
-  return "file://%s/%s" % (os.path.abspath(localDir), dir)
+  return "file://%s/%s" % (Path(localDir).resolve(), dir)
 
 
 def read_version(_path: str):
