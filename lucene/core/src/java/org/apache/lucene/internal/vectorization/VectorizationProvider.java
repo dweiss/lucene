@@ -45,7 +45,7 @@ import org.apache.lucene.util.VectorUtil;
  */
 public abstract class VectorizationProvider {
 
-  static final OptionalInt TESTS_VECTOR_SIZE;
+  public static final OptionalInt TESTS_VECTOR_SIZE;
   static final int UPPER_JAVA_FEATURE_VERSION = getUpperJavaFeatureVersion();
 
   static {
@@ -96,7 +96,7 @@ public abstract class VectorizationProvider {
         Holder.INSTANCE, "call to getInstance() from subclass of VectorizationProvider");
   }
 
-  VectorizationProvider() {
+  protected VectorizationProvider() {
     // no instance/subclass except from this package
   }
 
@@ -163,7 +163,7 @@ public abstract class VectorizationProvider {
         final var lookup = MethodHandles.lookup();
         final var cls =
             lookup.findClass(
-                "org.apache.lucene.internal.vectorization.PanamaVectorizationProvider");
+                "org.apache.lucene.internal.vectorization.panama.PanamaVectorizationProvider");
         final var constr = lookup.findConstructor(cls, MethodType.methodType(void.class));
         try {
           return (VectorizationProvider) constr.invoke();
