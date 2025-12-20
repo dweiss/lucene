@@ -124,23 +124,14 @@ public abstract class VectorizationProvider {
   static VectorizationProvider lookup(boolean testMode) {
     var implementations =
         ServiceLoader.load(VectorizationProviderService.class).stream()
-            .map(
-                prov -> {
-                  try {
-                    return prov.get();
-                  } catch (Throwable t) {
-                    LOG.warning("invalid provider: " + t.toString());
-                    return null;
-                  }
-                })
-            .filter(service -> service != null && service.isUsable())
+            .map(ServiceLoader.Provider::get)
             .collect(Collectors.toMap(e -> e.name(), e -> e));
 
     implementations = new TreeMap<>(implementations);
 
     ArrayDeque<VectorizationProviderService> inReversePreferenceOrder = new ArrayDeque<>();
 
-    // you can pass a property to force a specific implementation here or give order of preference.
+    // force a specific implementation here or give order of preference.
     String preference = System.getProperty("lucene.vectorization.impl", "*,panama,default");
     var options = Arrays.asList(preference.split(",")).reversed().iterator();
 
@@ -157,12 +148,15 @@ public abstract class VectorizationProvider {
       }
     }
 
-    if (inReversePreferenceOrder.isEmpty()) {
-      throw new RuntimeException(
-          "No vectorization provider matches this preference: " + preference);
+    while (!inReversePreferenceOrder.isEmpty()) {
+      var impl = inReversePreferenceOrder.removeFirst();
+      if (impl.isUsable()) {
+        return impl.newInstance();
+      }
     }
 
-    return inReversePreferenceOrder.getFirst().newInstance();
+    throw new RuntimeException(
+        "No vectorization provider matches this preference: " + preference);
   }
 
   // add all possible callers here as FQCN:
