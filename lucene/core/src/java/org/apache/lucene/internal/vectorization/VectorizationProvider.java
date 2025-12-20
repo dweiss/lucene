@@ -155,8 +155,7 @@ public abstract class VectorizationProvider {
       }
     }
 
-    throw new RuntimeException(
-        "No vectorization provider matches this preference: " + preference);
+    throw new RuntimeException("No vectorization provider matches this preference: " + preference);
   }
 
   // add all possible callers here as FQCN:
