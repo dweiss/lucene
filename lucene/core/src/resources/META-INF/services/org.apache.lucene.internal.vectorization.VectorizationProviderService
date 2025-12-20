@@ -15,7 +15,5 @@
 # limitations under the License.
 #
 
-# this lists the service explicitly but for MR-JAR this won't work if classes
-# are not available...
 org.apache.lucene.internal.vectorization.DefaultVectorizationProviderService
-org.apache.lucene.internal.vectorization.panama.PanamaVectorizationProviderService
+org.apache.lucene.internal.vectorization.PanamaVectorizationProviderService

@@ -15,13 +15,15 @@
  * limitations under the License.
  */
 
-package org.apache.lucene.internal.vectorization.panama;
+package org.apache.lucene.internal.vectorization;
 
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
 import java.util.Optional;
-import org.apache.lucene.internal.vectorization.VectorizationProvider;
-import org.apache.lucene.internal.vectorization.VectorizationProviderService;
 import org.apache.lucene.util.Constants;
 
+// this should live in a separate module, really. but for now - since we use
+// mr-jars, we have to look up the class by reflection (it isn't visible from this module).
 public class PanamaVectorizationProviderService implements VectorizationProviderService {
   /**
    * Looks up the vector module from Lucene's {@link ModuleLayer} or the root layer (if unnamed).
@@ -59,8 +61,7 @@ public class PanamaVectorizationProviderService implements VectorizationProvider
 
     try {
       return newInstance() != null;
-    } catch (Throwable t) {
-      // TODO: we should probably check what happened more thoroughly...
+    } catch (Throwable _) {
       return false;
     }
   }
@@ -72,6 +73,16 @@ public class PanamaVectorizationProviderService implements VectorizationProvider
 
   @Override
   public VectorizationProvider newInstance() {
-    return new PanamaVectorizationProvider();
+    try {
+      final var lookup = MethodHandles.lookup();
+      final var cls =
+          lookup.findClass(
+              "org.apache.lucene.internal.vectorization.panama.PanamaVectorizationProvider");
+      final var constr = lookup.findConstructor(cls, MethodType.methodType(void.class));
+      return (VectorizationProvider) constr.invoke();
+    } catch (Throwable t) {
+      // TODO: we should probably check what happened more thoroughly...
+      throw new RuntimeException(t);
+    }
   }
 }
