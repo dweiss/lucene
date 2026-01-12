@@ -29,6 +29,7 @@ description = 'Lucene core library'
 dependencies {
   moduleTestImplementation project(':lucene:codecs')
   moduleTestImplementation project(':lucene:test-framework')
+  moduleTestImplementation libs.archunit
 }
 
 // Setup api stub generation and multi-release jar support for the following JDKs.

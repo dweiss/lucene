@@ -2,6 +2,7 @@
 [versions]
 # expressions/ grammars
 antlr = "4.13.2"
+archunit = "1.4.1"
 # test assertions
 assertj = "3.27.6"
 # analysis/phonetic/ algorithms, gradle build checksums
@@ -62,6 +63,7 @@ zstd = "1.5.7-6"
 [libraries]
 antlr-core = { module = "org.antlr:antlr4", version.ref = "antlr" }
 antlr-runtime = { module = "org.antlr:antlr4-runtime", version.ref = "antlr" }
+archunit = { module = "com.tngtech.archunit:archunit", version.ref = "archunit" }
 assertj = { module = "org.assertj:assertj-core", version.ref = "assertj" }
 commons-codec = { module = "commons-codec:commons-codec", version.ref = "commons-codec" }
 commons-compress = { module = "org.apache.commons:commons-compress", version.ref = "commons-compress" }
