@@ -111,6 +111,8 @@ allprojects { prj ->
 
         task.dependsOn ":checkJdkInternalsExportedToGradle"
 
+        options.compilerArgs += ['-XDaddTypeAnnotationsToSymbol=true']
+
         options.errorprone.disableWarningsInGeneratedCode = true
         options.errorprone.errorproneArgs = [
             '-XepDisableAllChecks', // only enable specific checks

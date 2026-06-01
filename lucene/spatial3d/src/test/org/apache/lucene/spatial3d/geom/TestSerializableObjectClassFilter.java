@@ -25,8 +25,6 @@ import java.io.OutputStream;
 import org.apache.lucene.tests.util.LuceneTestCase;
 
 public class TestSerializableObjectClassFilter extends LuceneTestCase {
-
-  @SuppressWarnings("NonFinalStaticField")
   static volatile boolean nonSerializableConstructed = false,
       nonSerializableClassInitialized = false;
 
