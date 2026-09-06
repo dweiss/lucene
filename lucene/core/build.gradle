@@ -32,7 +32,10 @@ dependencies {
 }
 
 // Setup api stub generation and multi-release jar support for the following JDKs.
-project.getExtensions().getByType(MrJarsExtension).setupFor(Integer.parseInt(deps.versions.minJava.get()))
+project.getExtensions().getByType(MrJarsExtension).setupFor(
+    Integer.parseInt(deps.versions.minJava.get()),
+    27
+    )
 
 //
 // Regenerates "ForUtil.java" code used by codecs in this project and in backward-codecs

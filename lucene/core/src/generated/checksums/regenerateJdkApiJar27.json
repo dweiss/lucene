@@ -1,5 +1,5 @@
 {
     "build-tools/build-infra/src/main/java/org/apache/lucene/gradle/plugins/mrjar/ExtractJdkApis.java": "10634d9743f3e19bd236bba247fe8722b98b7c7c",
-    "lucene/core/src/generated/jdk/jdk25-api.jar": "271252d5b9d2f1516fe77c5c9d480814a303063d",
-    "property:jdk-version": "25"
+    "lucene/core/src/generated/jdk/jdk27-api.jar": "417ab96d3e31d2e36b6601b2161dd5d7344ca475",
+    "property:jdk-version": "27"
 }
