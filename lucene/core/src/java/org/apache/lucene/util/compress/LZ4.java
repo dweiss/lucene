@@ -74,8 +74,24 @@ public final class LZ4 {
 
   private static int commonBytes(byte[] b, int o1, int o2, int limit) {
     assert o1 < o2;
-    // never -1 because lengths always differ
-    return Arrays.mismatch(b, o1, limit, b, o2, limit);
+    // Compare 8 bytes at a time: matches are short on average, and this beats the call overhead of
+    // Arrays.mismatch for them.
+    int count = 0;
+    final int fastLimit = limit - o2 - 7;
+    while (count < fastLimit) {
+      // little-endian view so that the first differing byte is the lowest one
+      final long diff =
+          (long) BitUtil.VH_LE_LONG.get(b, o1 + count)
+              ^ (long) BitUtil.VH_LE_LONG.get(b, o2 + count);
+      if (diff != 0) {
+        return count + (Long.numberOfTrailingZeros(diff) >>> 3);
+      }
+      count += 8;
+    }
+    while (o2 + count < limit && b[o1 + count] == b[o2 + count]) {
+      count++;
+    }
+    return count;
   }
 
   /**
@@ -133,9 +149,17 @@ public final class LZ4 {
           dest[dOff] = dest[ref];
         }
       } else {
-        // no overlap -> arraycopy
-        System.arraycopy(dest, dOff - matchDec, dest, dOff, fastLen);
-        dOff += matchLen;
+        // no overlap: copy 8 bytes at a time. Matches are short on average, and explicit 8-byte
+        // copies beat System.arraycopy for those. Like the arraycopy of fastLen bytes this used to
+        // be, the copy may run up to 7 bytes past the end of the match.
+        final int end = dOff + matchLen;
+        int ref = dOff - matchDec;
+        do {
+          BitUtil.VH_NATIVE_LONG.set(dest, dOff, (long) BitUtil.VH_NATIVE_LONG.get(dest, ref));
+          dOff += 8;
+          ref += 8;
+        } while (dOff < end);
+        dOff = end;
       }
     } while (dOff < destEnd);
 
