@@ -388,10 +388,13 @@ public class TestLucene104HnswScalarQuantizedVectorsFormat extends BaseKnnVector
         try (IndexReader reader = DirectoryReader.open(w)) {
           LeafReader r = getOnlyLeafReader(reader);
           FloatVectorValues vectorValues = r.getFloatVectorValues(fieldName);
-          // Data-blind segments expose a bare dequantizing view; no raw float vectors are present.
-          assertFalse(
+          // Data-blind segments dequantize on read; no raw float vectors are present.
+          assertTrue(
               vectorValues
                   instanceof Lucene104ScalarQuantizedVectorsReader.ScalarQuantizedVectorValues);
+          assertFalse(
+              ((Lucene104ScalarQuantizedVectorsReader.ScalarQuantizedVectorValues) vectorValues)
+                  .servesRawVectors());
           TopDocs td =
               r.searchNearestVectors(
                   fieldName,

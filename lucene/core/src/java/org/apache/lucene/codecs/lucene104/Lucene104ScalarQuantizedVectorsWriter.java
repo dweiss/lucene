@@ -469,6 +469,18 @@ public class Lucene104ScalarQuantizedVectorsWriter extends FlatVectorsWriter {
         values = quantizeFromFloats(reader, fieldInfo, zeroCentroid);
       } else {
         QuantizedByteVectorValues qvv = getQuantizedVectorValues(reader, fieldInfo.name);
+        // Whether the source bytes were quantized against the zero centroid, and so can be copied
+        // straight into the output.
+        boolean zeroCentroidBytes;
+        if (qvv != null) {
+          Mode sourceMode = getMode(reader, fieldInfo.name);
+          zeroCentroidBytes = sourceMode != null && sourceMode != Mode.CENTERED;
+        } else {
+          // The flat reader is hidden behind a merge-time wrapper; fall back to the values it
+          // serves, which still carry the quantized bytes and the centroid they were built against.
+          qvv = quantizedOnlyVectorValues(reader, fieldInfo);
+          zeroCentroidBytes = qvv != null && isZero(qvv.getCentroid());
+        }
         if (qvv == null || qvv.size() == 0) {
           continue;
         }
@@ -484,8 +496,7 @@ public class Lucene104ScalarQuantizedVectorsWriter extends FlatVectorsWriter {
                   + encoding
                   + ": re-quantization requires raw float vectors");
         }
-        Mode sourceMode = getMode(reader, fieldInfo.name);
-        if (sourceMode != null && sourceMode != Mode.CENTERED) {
+        if (zeroCentroidBytes) {
           // Quantized-only segment whose bytes already match the output format (encoding and zero
           // centroid): copy them directly.
           values = qvv;
@@ -572,6 +583,52 @@ public class Lucene104ScalarQuantizedVectorsWriter extends FlatVectorsWriter {
     IOUtils.close(meta, vectorData, rawVectorDelegate);
   }
 
+  private static boolean isZero(float[] centroid) {
+    if (centroid == null) {
+      return false;
+    }
+    for (float v : centroid) {
+      if (v != 0f) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Returns the quantized bytes behind the vectors {@code vectorsReader} serves for {@code
+   * fieldInfo} when those are dequantized from this format's stored bytes rather than read from
+   * full-precision vectors, or null when the reader serves full-precision vectors or belongs to a
+   * foreign format. Unlike {@link #getQuantizedVectorValues} this inspects the served values rather
+   * than the reader's class, so it sees through wrappers that keep document order but hide the flat
+   * reader from {@link KnnVectorsReader#unwrapReaderForField}, such as {@code
+   * SlowCodecReaderWrapper} or a {@code FilterCodecReader}. Wrappers that re-order documents or
+   * re-wrap the values ({@code SortingCodecReader}) are not seen through; their sources fall back
+   * to re-quantization from the dequantized floats they serve.
+   */
+  static QuantizedByteVectorValues quantizedOnlyVectorValues(
+      KnnVectorsReader vectorsReader, FieldInfo fieldInfo) throws IOException {
+    return switch (fieldInfo.getVectorEncoding()) {
+      case FLOAT32 -> {
+        FloatVectorValues values = vectorsReader.getFloatVectorValues(fieldInfo.name);
+        yield values instanceof Lucene104ScalarQuantizedVectorsReader.ScalarQuantizedVectorValues sq
+                && sq.servesRawVectors() == false
+            ? sq.getQuantizedVectorValues()
+            : null;
+      }
+      case FLOAT16 -> {
+        Float16VectorValues values = vectorsReader.getFloat16VectorValues(fieldInfo.name);
+        yield values
+                    instanceof
+                    Lucene104ScalarQuantizedVectorsReader.ScalarQuantizedFloat16VectorValues sq
+                && sq.servesRawVectors() == false
+            ? sq.getQuantizedVectorValues()
+            : null;
+      }
+      case BYTE -> null;
+    };
+  }
+
   /**
    * Unwraps a merge-time reader down to the flat vectors reader. The per-field wrapper unwraps to
    * the HNSW reader, which must additionally be unwrapped to reach the flat reader.
@@ -625,6 +682,11 @@ public class Lucene104ScalarQuantizedVectorsWriter extends FlatVectorsWriter {
         case FLOAT16 -> reader.hasRawFloat16Vectors(fieldInfo.name);
         case BYTE -> false;
       };
+    }
+    // The flat reader may be hidden behind a merge-time wrapper that unwrapReaderForField cannot
+    // see through; the values it serves still tell whether they are dequantized bytes.
+    if (quantizedOnlyVectorValues(vectorsReader, fieldInfo) != null) {
+      return false;
     }
     // Foreign format: assume full-precision vectors are available when the reader serves them.
     return switch (fieldInfo.getVectorEncoding()) {

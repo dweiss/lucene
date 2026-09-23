@@ -23,7 +23,6 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import org.apache.lucene.codecs.hnsw.FlatVectorsScorer;
 import org.apache.lucene.codecs.lucene90.IndexedDISI;
-import org.apache.lucene.codecs.lucene95.HasIndexSlice;
 import org.apache.lucene.codecs.lucene95.OrdToDocDISIReaderConfiguration;
 import org.apache.lucene.index.Float16VectorValues;
 import org.apache.lucene.index.VectorSimilarityFunction;
@@ -46,8 +45,7 @@ import org.apache.lucene.util.quantization.QuantizedByteVectorValues.ScalarEncod
  *
  * @lucene.internal
  */
-abstract class OffHeapScalarQuantizedFloat16VectorValues extends Float16VectorValues
-    implements HasIndexSlice {
+abstract class OffHeapScalarQuantizedFloat16VectorValues extends Float16VectorValues {
 
   final int dimension;
   final int size;
@@ -157,18 +155,6 @@ abstract class OffHeapScalarQuantizedFloat16VectorValues extends Float16VectorVa
     quantizedComponentSum = slice.readInt();
     return new OptimizedScalarQuantizer.QuantizationResult(
         correctiveValues[0], correctiveValues[1], correctiveValues[2], quantizedComponentSum);
-  }
-
-  @Override
-  public int getVectorByteLength() {
-    // Length of the packed quantized vector payload, excluding the corrective terms stored after
-    // it. This differs from the logical dimension for packed encodings such as PACKED_NIBBLE.
-    return byteValue.length;
-  }
-
-  @Override
-  public IndexInput getSlice() {
-    return slice;
   }
 
   static OffHeapScalarQuantizedFloat16VectorValues load(

@@ -23,7 +23,6 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import org.apache.lucene.codecs.hnsw.FlatVectorsScorer;
 import org.apache.lucene.codecs.lucene90.IndexedDISI;
-import org.apache.lucene.codecs.lucene95.HasIndexSlice;
 import org.apache.lucene.codecs.lucene95.OrdToDocDISIReaderConfiguration;
 import org.apache.lucene.index.FloatVectorValues;
 import org.apache.lucene.index.VectorSimilarityFunction;
@@ -52,8 +51,7 @@ import org.apache.lucene.util.quantization.QuantizedByteVectorValues.ScalarEncod
  *
  * @lucene.internal
  */
-abstract class OffHeapScalarQuantizedFloatVectorValues extends FloatVectorValues
-    implements HasIndexSlice {
+abstract class OffHeapScalarQuantizedFloatVectorValues extends FloatVectorValues {
 
   final int dimension;
   final int size;
@@ -163,16 +161,6 @@ abstract class OffHeapScalarQuantizedFloatVectorValues extends FloatVectorValues
     quantizedComponentSum = slice.readInt();
     return new OptimizedScalarQuantizer.QuantizationResult(
         correctiveValues[0], correctiveValues[1], correctiveValues[2], quantizedComponentSum);
-  }
-
-  @Override
-  public int getVectorByteLength() {
-    return dimension;
-  }
-
-  @Override
-  public IndexInput getSlice() {
-    return slice;
   }
 
   static OffHeapScalarQuantizedFloatVectorValues load(

@@ -244,18 +244,24 @@ public class Lucene104ScalarQuantizedVectorsReader extends FlatVectorsReader
 
     if (fi.storesFloatVectors() == false) {
       // Data-blind mode without floats: full-precision float vectors were never stored. Reconstruct
-      // floats from the quantized data.
-      return OffHeapScalarQuantizedFloatVectorValues.load(
-          fi.ordToDocDISIReaderConfiguration,
-          fi.dimension,
-          fi.size,
-          fi.scalarEncoding,
-          fi.similarityFunction,
-          vectorScorer,
-          fi.centroid,
-          fi.vectorDataOffset,
-          fi.vectorDataLength,
-          quantizedVectorData);
+      // floats from the quantized data, and pair that view with the quantized values so scorer()
+      // scores in quantized space while vectorValue() and rescorer() dequantize, as the fp16 path
+      // does. Merges also rely on this pairing to recognize a quantized-only source behind a reader
+      // wrapper, see Lucene104ScalarQuantizedVectorsWriter#quantizedOnlyVectorValues.
+      FloatVectorValues dequantizedRawVectorValues =
+          OffHeapScalarQuantizedFloatVectorValues.load(
+              fi.ordToDocDISIReaderConfiguration,
+              fi.dimension,
+              fi.size,
+              fi.scalarEncoding,
+              fi.similarityFunction,
+              vectorScorer,
+              fi.centroid,
+              fi.vectorDataOffset,
+              fi.vectorDataLength,
+              quantizedVectorData);
+      return new ScalarQuantizedVectorValues(
+          dequantizedRawVectorValues, loadQuantizedVectorValues(fi));
     }
 
     FloatVectorValues rawFloatVectorValues = rawVectorsReader.getFloatVectorValues(field);
@@ -828,6 +834,19 @@ public class Lucene104ScalarQuantizedVectorsReader extends FlatVectorsReader
     QuantizedByteVectorValues getQuantizedVectorValues() throws IOException {
       return quantizedVectorValues;
     }
+
+    /** The values {@link #vectorValue} reads from: stored vectors, or a dequantizing view. */
+    FloatVectorValues getRawVectorValues() {
+      return rawVectorValues;
+    }
+
+    /**
+     * Whether {@link #vectorValue} serves stored full-precision vectors. False when the segment
+     * holds only quantized bytes and values are reconstructed by dequantizing them.
+     */
+    boolean servesRawVectors() {
+      return rawVectorValues instanceof OffHeapScalarQuantizedFloatVectorValues == false;
+    }
   }
 
   /** Vector values holding raw and quantized vector values */
@@ -889,6 +908,14 @@ public class Lucene104ScalarQuantizedVectorsReader extends FlatVectorsReader
 
     QuantizedByteVectorValues getQuantizedVectorValues() throws IOException {
       return quantizedVectorValues;
+    }
+
+    /**
+     * Whether {@link #vectorValue} serves stored full-precision vectors. False when the segment
+     * holds only quantized bytes and values are reconstructed by dequantizing them.
+     */
+    boolean servesRawVectors() {
+      return rawVectorValues instanceof OffHeapScalarQuantizedFloat16VectorValues == false;
     }
   }
 }

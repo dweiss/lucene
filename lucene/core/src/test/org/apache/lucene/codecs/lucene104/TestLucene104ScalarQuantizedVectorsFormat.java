@@ -43,6 +43,7 @@ import org.apache.lucene.document.KnnFloat16VectorField;
 import org.apache.lucene.document.KnnFloatVectorField;
 import org.apache.lucene.index.CodecReader;
 import org.apache.lucene.index.DirectoryReader;
+import org.apache.lucene.index.FilterLeafReader;
 import org.apache.lucene.index.Float16VectorValues;
 import org.apache.lucene.index.FloatVectorValues;
 import org.apache.lucene.index.IndexReader;
@@ -56,6 +57,7 @@ import org.apache.lucene.index.SegmentCommitInfo;
 import org.apache.lucene.index.SegmentInfo;
 import org.apache.lucene.index.SegmentInfos;
 import org.apache.lucene.index.SerialMergeScheduler;
+import org.apache.lucene.index.SlowCodecReaderWrapper;
 import org.apache.lucene.index.VectorSimilarityFunction;
 import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.IndexSearcher;
@@ -645,7 +647,7 @@ public class TestLucene104ScalarQuantizedVectorsFormat extends BaseKnnVectorsFor
 
   /**
    * Data-blind segments never write full-precision float vectors, so {@link FloatVectorValues} must
-   * be a bare dequantizing view rather than one backed by raw vectors.
+   * dequantize the stored bytes rather than read raw vectors.
    */
   public void testDataBlindNoRawFloatVectors() throws Exception {
     String fieldName = "field";
@@ -662,12 +664,18 @@ public class TestLucene104ScalarQuantizedVectorsFormat extends BaseKnnVectorsFor
         }
       }
       try (IndexReader reader = DirectoryReader.open(dir)) {
-        LeafReader r = getOnlyLeafReader(reader);
-        FloatVectorValues vectorValues = r.getFloatVectorValues(fieldName);
-        assertEquals(numVectors, vectorValues.size());
-        assertFalse(
-            vectorValues
-                instanceof Lucene104ScalarQuantizedVectorsReader.ScalarQuantizedVectorValues);
+        int totalVectors = 0;
+        for (LeafReaderContext ctx : reader.leaves()) {
+          FloatVectorValues vectorValues = ctx.reader().getFloatVectorValues(fieldName);
+          totalVectors += vectorValues.size();
+          assertTrue(
+              vectorValues
+                  instanceof Lucene104ScalarQuantizedVectorsReader.ScalarQuantizedVectorValues);
+          assertFalse(
+              ((Lucene104ScalarQuantizedVectorsReader.ScalarQuantizedVectorValues) vectorValues)
+                  .servesRawVectors());
+        }
+        assertEquals(numVectors, totalVectors);
       }
     }
   }
@@ -1375,6 +1383,186 @@ public class TestLucene104ScalarQuantizedVectorsFormat extends BaseKnnVectorsFor
         assertTrue(
             "expected encoding-mismatch message, got: " + t,
             exceptionChainContains(t, "re-quantization requires raw float vectors"));
+      }
+    }
+  }
+
+  /**
+   * Wraps a leaf so that a merge sees a {@link SlowCodecReaderWrapper} vector reader rather than
+   * this format's own, the way filtered readers reach {@code addIndexes} and re-ordering merges.
+   */
+  private static CodecReader wrapForMerge(LeafReader leaf) throws IOException {
+    return SlowCodecReaderWrapper.wrap(
+        new FilterLeafReader(leaf) {
+          @Override
+          public CacheHelper getCoreCacheHelper() {
+            return in.getCoreCacheHelper();
+          }
+
+          @Override
+          public CacheHelper getReaderCacheHelper() {
+            return in.getReaderCacheHelper();
+          }
+        });
+  }
+
+  private static CodecReader[] wrapLeavesForMerge(DirectoryReader reader) throws IOException {
+    CodecReader[] wrapped = new CodecReader[reader.leaves().size()];
+    for (LeafReaderContext leaf : reader.leaves()) {
+      wrapped[leaf.ord] = wrapForMerge(leaf.reader());
+    }
+    return wrapped;
+  }
+
+  /**
+   * Merging data-blind segments whose flat reader is hidden behind a reader wrapper must still pass
+   * their quantized bytes through untouched rather than re-quantize the dequantized floats.
+   */
+  public void testDataBlindMergeThroughWrappedReaderKeepsQuantizedBytes() throws Exception {
+    assertDataBlindMergeThroughWrappedReaderKeepsQuantizedBytes(false);
+  }
+
+  /** fp16 counterpart of {@link #testDataBlindMergeThroughWrappedReaderKeepsQuantizedBytes}. */
+  public void testDataBlindFloat16MergeThroughWrappedReaderKeepsQuantizedBytes() throws Exception {
+    assertDataBlindMergeThroughWrappedReaderKeepsQuantizedBytes(true);
+  }
+
+  private void assertDataBlindMergeThroughWrappedReaderKeepsQuantizedBytes(boolean float16Data)
+      throws Exception {
+    String fieldName = "field";
+    int numVectorsPerSegment = random().nextInt(4, 50);
+    int dims = float16Data ? 2 * random().nextInt(2, 33) : random().nextInt(4, 65);
+    VectorSimilarityFunction similarityFunction = randomSimilarity();
+    try (Directory source = newDirectory();
+        Directory target = newDirectory()) {
+      try (IndexWriter w =
+          new IndexWriter(
+              source,
+              newIndexWriterConfig()
+                  .setMergePolicy(NoMergePolicy.INSTANCE)
+                  .setCodec(dataBlindCodec()))) {
+        for (int s = 0; s < 2; s++) {
+          addVectorDocs(w, fieldName, dims, similarityFunction, numVectorsPerSegment, float16Data);
+          w.commit();
+        }
+      }
+      try (DirectoryReader reader = DirectoryReader.open(source)) {
+        // Capture every segment's stored quantized bytes, in leaf order.
+        List<byte[]> sourceQuantized = new ArrayList<>();
+        List<OptimizedScalarQuantizer.QuantizationResult> sourceCorrections = new ArrayList<>();
+        for (LeafReaderContext leaf : reader.leaves()) {
+          Lucene104ScalarQuantizedVectorsReader vectorsReader =
+              (Lucene104ScalarQuantizedVectorsReader)
+                  ((CodecReader) leaf.reader()).getVectorReader().unwrapReaderForField(fieldName);
+          captureQuantized(
+              vectorsReader.getQuantizedVectorValues(fieldName),
+              sourceQuantized,
+              sourceCorrections);
+        }
+        assertEquals(2 * numVectorsPerSegment, sourceQuantized.size());
+        try (IndexWriter w =
+            new IndexWriter(
+                target,
+                newIndexWriterConfig()
+                    .setMergePolicy(NoMergePolicy.INSTANCE)
+                    .setCodec(dataBlindCodec()))) {
+          w.addIndexes(wrapLeavesForMerge(reader));
+          try (DirectoryReader merged = DirectoryReader.open(w)) {
+            Lucene104ScalarQuantizedVectorsReader vectorsReader =
+                (Lucene104ScalarQuantizedVectorsReader)
+                    ((CodecReader) getOnlyLeafReader(merged))
+                        .getVectorReader()
+                        .unwrapReaderForField(fieldName);
+            List<byte[]> mergedVectors = new ArrayList<>();
+            List<OptimizedScalarQuantizer.QuantizationResult> mergedCorrections = new ArrayList<>();
+            captureQuantized(
+                vectorsReader.getQuantizedVectorValues(fieldName),
+                mergedVectors,
+                mergedCorrections);
+            // addIndexes appends the readers in order, so the blocks must appear verbatim.
+            assertEquals(sourceQuantized.size(), mergedVectors.size());
+            assertTrue(
+                "data-blind quantized bytes must be passed through untouched",
+                quantizedBlockEquals(
+                    sourceQuantized, sourceCorrections, mergedVectors, mergedCorrections, 0));
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * The encoding-mismatch check must also hold when the data-blind source is hidden behind a reader
+   * wrapper, instead of silently re-quantizing the dequantized floats it serves.
+   */
+  public void testDataBlindIncompatibleEncodingMergeThroughWrappedReader() throws Exception {
+    String fieldName = "field";
+    int numVectors = random().nextInt(1, 20);
+    int dims = random().nextInt(4, 33);
+    VectorSimilarityFunction similarityFunction = randomSimilarity();
+    try (Directory source = newDirectory();
+        Directory target = newDirectory()) {
+      try (IndexWriter w =
+          new IndexWriter(
+              source,
+              newIndexWriterConfig()
+                  .setCodec(
+                      TestUtil.alwaysKnnVectorsFormat(
+                          new Lucene104ScalarQuantizedVectorsFormat(
+                              ScalarEncoding.PACKED_NIBBLE, Mode.DATA_BLIND_WITHOUT_FLOATS))))) {
+        addFloatVectorDocs(w, fieldName, dims, similarityFunction, numVectors);
+      }
+      try (DirectoryReader reader = DirectoryReader.open(source);
+          IndexWriter w =
+              new IndexWriter(
+                  target,
+                  newIndexWriterConfig()
+                      .setMergeScheduler(new SerialMergeScheduler())
+                      .setCodec(
+                          TestUtil.alwaysKnnVectorsFormat(
+                              new Lucene104ScalarQuantizedVectorsFormat(
+                                  ScalarEncoding.UNSIGNED_BYTE,
+                                  Mode.DATA_BLIND_WITHOUT_FLOATS))))) {
+        CodecReader[] wrapped = wrapLeavesForMerge(reader);
+        Throwable t = expectThrows(Exception.class, () -> w.addIndexes(wrapped));
+        assertTrue(
+            "expected encoding-mismatch message, got: " + t,
+            exceptionChainContains(t, "re-quantization requires raw float vectors"));
+      }
+    }
+  }
+
+  /**
+   * A data-blind source hidden behind a reader wrapper must still be rejected by a writer that
+   * stores full-precision floats, rather than have its dequantized floats taken for real ones.
+   */
+  public void testDataBlindSegmentsCannotMergeIntoCenteredWriterThroughWrappedReader()
+      throws Exception {
+    String fieldName = "field";
+    int numVectors = random().nextInt(1, 20);
+    int dims = random().nextInt(4, 33);
+    VectorSimilarityFunction similarityFunction = randomSimilarity();
+    try (Directory source = newDirectory();
+        Directory target = newDirectory()) {
+      try (IndexWriter w =
+          new IndexWriter(source, newIndexWriterConfig().setCodec(dataBlindCodec()))) {
+        addFloatVectorDocs(w, fieldName, dims, similarityFunction, numVectors);
+      }
+      try (DirectoryReader reader = DirectoryReader.open(source);
+          IndexWriter w =
+              new IndexWriter(
+                  target,
+                  newIndexWriterConfig()
+                      .setMergeScheduler(new SerialMergeScheduler())
+                      .setCodec(
+                          TestUtil.alwaysKnnVectorsFormat(
+                              new Lucene104ScalarQuantizedVectorsFormat(
+                                  encoding, Mode.CENTERED))))) {
+        CodecReader[] wrapped = wrapLeavesForMerge(reader);
+        Throwable t = expectThrows(Exception.class, () -> w.addIndexes(wrapped));
+        assertTrue(
+            "expected missing-floats message, got: " + t,
+            exceptionChainContains(t, "without full-precision float vectors"));
       }
     }
   }
