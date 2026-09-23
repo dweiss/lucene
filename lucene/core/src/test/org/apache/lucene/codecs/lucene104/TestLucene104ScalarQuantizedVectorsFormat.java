@@ -25,12 +25,14 @@ import static org.hamcrest.Matchers.oneOf;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import org.apache.lucene.codecs.Codec;
 import org.apache.lucene.codecs.CodecUtil;
+import org.apache.lucene.codecs.CompoundDirectory;
 import org.apache.lucene.codecs.FilterCodec;
 import org.apache.lucene.codecs.KnnVectorsFormat;
 import org.apache.lucene.codecs.KnnVectorsReader;
@@ -50,6 +52,9 @@ import org.apache.lucene.index.KnnVectorValues;
 import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.NoMergePolicy;
+import org.apache.lucene.index.SegmentCommitInfo;
+import org.apache.lucene.index.SegmentInfo;
+import org.apache.lucene.index.SegmentInfos;
 import org.apache.lucene.index.SerialMergeScheduler;
 import org.apache.lucene.index.VectorSimilarityFunction;
 import org.apache.lucene.search.DocIdSetIterator;
@@ -67,6 +72,7 @@ import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.tests.index.BaseKnnVectorsFormatTestCase;
 import org.apache.lucene.tests.store.BaseDirectoryWrapper;
 import org.apache.lucene.tests.util.TestUtil;
+import org.apache.lucene.util.IOFunction;
 import org.apache.lucene.util.VectorUtil;
 import org.apache.lucene.util.quantization.OptimizedScalarQuantizer;
 import org.apache.lucene.util.quantization.QuantizedByteVectorValues;
@@ -942,8 +948,6 @@ public class TestLucene104ScalarQuantizedVectorsFormat extends BaseKnnVectorsFor
           new IndexWriter(
               dir,
               newIndexWriterConfig()
-                  .setMergePolicy(NoMergePolicy.INSTANCE)
-                  .setUseCompoundFile(false)
                   .setCodec(
                       TestUtil.alwaysKnnVectorsFormat(
                           new Lucene104ScalarQuantizedVectorsFormat(encoding, Mode.CENTERED))))) {
@@ -957,12 +961,7 @@ public class TestLucene104ScalarQuantizedVectorsFormat extends BaseKnnVectorsFor
 
     try (Directory dir = newDirectory()) {
       try (IndexWriter w =
-          new IndexWriter(
-              dir,
-              newIndexWriterConfig()
-                  .setMergePolicy(NoMergePolicy.INSTANCE)
-                  .setUseCompoundFile(false)
-                  .setCodec(dataBlindCodec()))) {
+          new IndexWriter(dir, newIndexWriterConfig().setCodec(dataBlindCodec()))) {
         addFloatVectorDocs(w, fieldName, dims, similarityFunction, numVectors);
       }
       assertEquals(Lucene104ScalarQuantizedVectorsFormat.VERSION_DATA_BLIND, metaVersion(dir));
@@ -972,12 +971,7 @@ public class TestLucene104ScalarQuantizedVectorsFormat extends BaseKnnVectorsFor
 
     try (Directory dir = newDirectory()) {
       try (IndexWriter w =
-          new IndexWriter(
-              dir,
-              newIndexWriterConfig()
-                  .setMergePolicy(NoMergePolicy.INSTANCE)
-                  .setUseCompoundFile(false)
-                  .setCodec(dataBlindWithFloatsCodec()))) {
+          new IndexWriter(dir, newIndexWriterConfig().setCodec(dataBlindWithFloatsCodec()))) {
         addFloatVectorDocs(w, fieldName, dims, similarityFunction, numVectors);
       }
       assertEquals(Lucene104ScalarQuantizedVectorsFormat.VERSION_DATA_BLIND, metaVersion(dir));
@@ -1172,13 +1166,14 @@ public class TestLucene104ScalarQuantizedVectorsFormat extends BaseKnnVectorsFor
 
   /**
    * Reads the {@link Lucene104ScalarQuantizedVectorsFormat.Mode} wire value from the metadata of
-   * the first field with vectors, or {@link Lucene104ScalarQuantizedVectorsFormat.Mode#CENTERED}
-   * for version 0 metadata which implies it.
+   * every segment in the latest commit, or {@link
+   * Lucene104ScalarQuantizedVectorsFormat.Mode#CENTERED} for version 0 metadata which implies it.
+   * All segments must agree on the mode.
    */
   private Lucene104ScalarQuantizedVectorsFormat.Mode metaMode(Directory dir) throws IOException {
-    for (String file : dir.listAll()) {
-      if (file.endsWith("." + Lucene104ScalarQuantizedVectorsFormat.META_EXTENSION)) {
-        try (IndexInput in = dir.openInput(file, IOContext.DEFAULT)) {
+    return readMeta(
+        dir,
+        in -> {
           int version =
               CodecUtil.checkHeader(
                   in,
@@ -1205,10 +1200,9 @@ public class TestLucene104ScalarQuantizedVectorsFormat extends BaseKnnVectorsFor
               return Lucene104ScalarQuantizedVectorsFormat.Mode.fromWireNumber(in.readByte());
             }
           }
-        }
-      }
-    }
-    throw new AssertionError("no metadata file found");
+          // No field with vectors in this segment: nothing to report.
+          return null;
+        });
   }
 
   public void testDataBlindFloat16Search() throws Exception {
@@ -1405,19 +1399,60 @@ public class TestLucene104ScalarQuantizedVectorsFormat extends BaseKnnVectorsFor
     }
   }
 
+  /**
+   * Reads the metadata version of every segment in the latest commit. All segments must agree on
+   * the version.
+   */
   private int metaVersion(Directory dir) throws IOException {
-    for (String file : dir.listAll()) {
+    return readMeta(
+        dir,
+        in ->
+            CodecUtil.checkHeader(
+                in,
+                Lucene104ScalarQuantizedVectorsFormat.META_CODEC_NAME,
+                Lucene104ScalarQuantizedVectorsFormat.VERSION_START,
+                Lucene104ScalarQuantizedVectorsFormat.VERSION_CURRENT));
+  }
+
+  /**
+   * Applies {@code reader} to the quantized vectors metadata file of every segment in the latest
+   * commit of {@code dir}, looking inside compound files where necessary, and returns the single
+   * value all segments agree on. A {@code null} result from {@code reader} is ignored. Fails if no
+   * segment produced a value, so this works regardless of how the index was flushed or merged.
+   */
+  private static <T> T readMeta(Directory dir, IOFunction<IndexInput, T> reader)
+      throws IOException {
+    List<T> values = new ArrayList<>();
+    for (SegmentCommitInfo sci : SegmentInfos.readLatestCommit(dir)) {
+      SegmentInfo si = sci.info;
+      if (si.getUseCompoundFile()) {
+        try (CompoundDirectory cfs = si.getCodec().compoundFormat().getCompoundReader(dir, si)) {
+          readMeta(cfs, Arrays.asList(cfs.listAll()), reader, values);
+        }
+      } else {
+        readMeta(dir, si.files(), reader, values);
+      }
+    }
+    assertFalse("no metadata file found in " + Arrays.toString(dir.listAll()), values.isEmpty());
+    for (T value : values) {
+      assertEquals("segments disagree on metadata: " + values, values.get(0), value);
+    }
+    return values.get(0);
+  }
+
+  private static <T> void readMeta(
+      Directory dir, Collection<String> files, IOFunction<IndexInput, T> reader, List<T> values)
+      throws IOException {
+    for (String file : files) {
       if (file.endsWith("." + Lucene104ScalarQuantizedVectorsFormat.META_EXTENSION)) {
         try (IndexInput in = dir.openInput(file, IOContext.DEFAULT)) {
-          return CodecUtil.checkHeader(
-              in,
-              Lucene104ScalarQuantizedVectorsFormat.META_CODEC_NAME,
-              Lucene104ScalarQuantizedVectorsFormat.VERSION_START,
-              Lucene104ScalarQuantizedVectorsFormat.VERSION_CURRENT);
+          T value = reader.apply(in);
+          if (value != null) {
+            values.add(value);
+          }
         }
       }
     }
-    throw new AssertionError("no metadata file found");
   }
 
   private static boolean exceptionChainContains(Throwable t, String msg) {
