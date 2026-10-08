@@ -47,8 +47,9 @@ import org.openjdk.jmh.infra.Blackhole;
  * Compares FST traversal with eager, boxed outputs ({@code org.apache.lucene.util.fst}, {@code
  * impl=old}) against lazy, position-based outputs ({@code org.apache.lucene.util.fst2}, {@code
  * impl=new}) and eager outputs decoded into reusable holders ({@code org.apache.lucene.util.fst3},
- * {@code impl=holder}). Run with {@code -prof gc}: the decisive numbers are {@code
- * gc.alloc.rate.norm} and {@code ns/op}.
+ * {@code impl=holder}) and the hybrid of the two: lazy positions accumulated into holders ({@code
+ * org.apache.lucene.util.fst4}, {@code impl=hybrid}). Run with {@code -prof gc}: the decisive
+ * numbers are {@code gc.alloc.rate.norm} and {@code ns/op}.
  */
 @BenchmarkMode(Mode.AverageTime)
 @OutputTimeUnit(TimeUnit.NANOSECONDS)
@@ -58,7 +59,7 @@ import org.openjdk.jmh.infra.Blackhole;
 @Fork(1)
 public class FSTOutputsBenchmark {
 
-  @Param({"old", "new", "holder"})
+  @Param({"old", "new", "holder", "hybrid"})
   public String impl;
 
   @Param({"none", "long", "bytes", "pair"})
@@ -80,7 +81,8 @@ public class FSTOutputsBenchmark {
   enum Impl {
     OLD,
     NEW,
-    HOLDER
+    HOLDER,
+    HYBRID
   }
 
   FSTBenchmarkData data;
@@ -90,12 +92,14 @@ public class FSTOutputsBenchmark {
   org.apache.lucene.util.fst.FST<Object> oldFst;
   org.apache.lucene.util.fst2.FST<Object> newFst;
   org.apache.lucene.util.fst3.FST<Object> holderFst;
+  org.apache.lucene.util.fst4.FST<Object> hybridFst;
 
   private Path tempDir;
   private Directory dir;
   private IndexInput oldIn;
   private IndexInput newIn;
   private IndexInput holderIn;
+  private IndexInput hybridIn;
 
   private int cursor;
   private final long[] scratch = new long[64];
@@ -111,6 +115,10 @@ public class FSTOutputsBenchmark {
   private final org.apache.lucene.util.fst3.FST.Arc<Object> holderArc =
       new org.apache.lucene.util.fst3.FST.Arc<>();
   private org.apache.lucene.util.fst3.OutputHolder<Object> holderResult;
+  private org.apache.lucene.util.fst4.FST.BytesReader hybridReader;
+  private final org.apache.lucene.util.fst4.FST.Arc hybridArc =
+      new org.apache.lucene.util.fst4.FST.Arc();
+  private org.apache.lucene.util.fst4.OutputHolder<Object> hybridResult;
 
   @Setup(Level.Trial)
   public void setup() throws IOException {
@@ -157,7 +165,7 @@ public class FSTOutputsBenchmark {
       }
       newFst = fst;
       newReader = fst.getBytesReader();
-    } else {
+    } else if (which == Impl.HOLDER) {
       org.apache.lucene.util.fst3.FST<Object> fst = buildHolder(kind, data);
       if (dir != null) {
         try (IndexOutput out = dir.createOutput("holder", IOContext.DEFAULT)) {
@@ -175,12 +183,30 @@ public class FSTOutputsBenchmark {
       holderFst = fst;
       holderReader = fst.getBytesReader();
       holderResult = fst.outputs.newHolder();
+    } else {
+      org.apache.lucene.util.fst4.FST<Object> fst = buildHybrid(kind, data);
+      if (dir != null) {
+        try (IndexOutput out = dir.createOutput("hybrid", IOContext.DEFAULT)) {
+          fst.save(out, out);
+        }
+        hybridIn = dir.openInput("hybrid", IOContext.DEFAULT);
+        org.apache.lucene.util.fst4.FST.FSTMetadata<Object> meta =
+            org.apache.lucene.util.fst4.FST.readMetadata(hybridIn, hybridOutputs(kind));
+        fst =
+            org.apache.lucene.util.fst4.FST.fromFSTReader(
+                meta,
+                new org.apache.lucene.util.fst4.OffHeapFSTStore(
+                    hybridIn, hybridIn.getFilePointer(), meta));
+      }
+      hybridFst = fst;
+      hybridReader = fst.getBytesReader();
+      hybridResult = fst.outputs.newHolder();
     }
   }
 
   @TearDown(Level.Trial)
   public void tearDown() throws IOException {
-    IOUtils.close(oldIn, newIn, holderIn, dir);
+    IOUtils.close(oldIn, newIn, holderIn, hybridIn, dir);
     if (tempDir != null) {
       IOUtils.rm(tempDir);
     }
@@ -203,6 +229,48 @@ public class FSTOutputsBenchmark {
    */
   static long longValue(org.apache.lucene.util.fst3.OutputHolder<?> holder) {
     return ((org.apache.lucene.util.fst3.PositiveIntOutputs.LongHolder) holder).value;
+  }
+
+  static long longValue4(org.apache.lucene.util.fst4.OutputHolder<?> holder) {
+    return ((org.apache.lucene.util.fst4.PositiveIntOutputs.LongHolder) holder).value;
+  }
+
+  static org.apache.lucene.util.fst4.Outputs<Object> hybridOutputs(Kind kind) {
+    return switch (kind) {
+      case NONE -> cast(org.apache.lucene.util.fst4.NoOutputs.getSingleton());
+      case LONG -> cast(org.apache.lucene.util.fst4.PositiveIntOutputs.getSingleton());
+      case BYTES -> cast(org.apache.lucene.util.fst4.ByteSequenceOutputs.getSingleton());
+      case PAIR ->
+          cast(
+              new org.apache.lucene.util.fst4.PairOutputs<>(
+                  org.apache.lucene.util.fst4.PositiveIntOutputs.getSingleton(),
+                  org.apache.lucene.util.fst4.ByteSequenceOutputs.getSingleton()));
+    };
+  }
+
+  static org.apache.lucene.util.fst4.FST<Object> buildHybrid(Kind kind, FSTBenchmarkData data)
+      throws IOException {
+    org.apache.lucene.util.fst4.Outputs<Object> outputs = hybridOutputs(kind);
+    org.apache.lucene.util.fst4.FSTCompiler<Object> compiler =
+        new org.apache.lucene.util.fst4.FSTCompiler.Builder<>(
+                org.apache.lucene.util.fst4.FST.INPUT_TYPE.BYTE1, outputs)
+            .build();
+    IntsRefBuilder scratch = new IntsRefBuilder();
+    for (int i = 0; i < data.terms.length; i++) {
+      Object value =
+          switch (kind) {
+            case NONE -> outputs.getNoOutput();
+            case LONG -> data.longOutputs[i];
+            case BYTES -> data.bytesOutputs[i];
+            case PAIR -> {
+              org.apache.lucene.util.fst4.PairOutputs<Long, BytesRef> po = cast(outputs);
+              yield po.newPair(data.longOutputs[i], data.bytesOutputs[i]);
+            }
+          };
+      compiler.add(org.apache.lucene.util.fst4.Util.toIntsRef(data.terms[i], scratch), value);
+    }
+    return org.apache.lucene.util.fst4.FST.fromFSTReader(
+        compiler.compile(), compiler.getFSTReader());
   }
 
   static org.apache.lucene.util.fst.Outputs<Object> oldOutputs(Kind kind) {
@@ -347,6 +415,13 @@ public class FSTOutputsBenchmark {
           bh.consume(org.apache.lucene.util.fst3.Util.get(holderFst, key, holderResult));
         }
       }
+      case HYBRID -> {
+        if (kind == Kind.NONE) {
+          bh.consume(org.apache.lucene.util.fst4.Util.contains(hybridFst, key));
+        } else {
+          bh.consume(org.apache.lucene.util.fst4.Util.get(hybridFst, key, hybridResult));
+        }
+      }
     }
   }
 
@@ -373,6 +448,10 @@ public class FSTOutputsBenchmark {
     BytesRef key = data.hits[next()];
     if (which == Impl.HOLDER) {
       lookupHitWalkHolder(key, bh);
+      return;
+    }
+    if (which == Impl.HYBRID) {
+      lookupHitWalkHybrid(key, bh);
       return;
     }
     if (which == Impl.OLD) {
@@ -437,6 +516,39 @@ public class FSTOutputsBenchmark {
     }
   }
 
+  private void lookupHitWalkHybrid(BytesRef key, Blackhole bh) throws IOException {
+    org.apache.lucene.util.fst4.FST<Object> fst = hybridFst;
+    org.apache.lucene.util.fst4.FST.BytesReader in = hybridReader;
+    org.apache.lucene.util.fst4.FST.Arc arc = fst.getFirstArc(hybridArc);
+    if (kind == Kind.NONE) {
+      for (int i = 0; i < key.length; i++) {
+        if (fst.findTargetArc(key.bytes[key.offset + i] & 0xFF, arc, arc, in) == null) {
+          bh.consume(false);
+          return;
+        }
+      }
+      bh.consume(arc.isFinal());
+      return;
+    }
+    org.apache.lucene.util.fst4.OutputHolder<Object> acc = hybridResult;
+    acc.setNoOutput();
+    for (int i = 0; i < key.length; i++) {
+      if (fst.findTargetArc(key.bytes[key.offset + i] & 0xFF, arc, arc, in) == null) {
+        bh.consume(false);
+        return;
+      }
+      fst.readAddInto(arc.outputPos(), in, acc);
+    }
+    if (arc.isFinal()) {
+      fst.readAddInto(arc.nextFinalOutputPos(), in, acc);
+    }
+    if (kind == Kind.LONG) {
+      bh.consume(longValue4(acc));
+    } else {
+      bh.consume(acc);
+    }
+  }
+
   private void lookupHitWalkHolder(BytesRef key, Blackhole bh) throws IOException {
     org.apache.lucene.util.fst3.FST<Object> fst = holderFst;
     org.apache.lucene.util.fst3.FST.BytesReader in = holderReader;
@@ -491,12 +603,25 @@ public class FSTOutputsBenchmark {
       case OLD -> org.apache.lucene.util.fst.Util.get(oldFst, key) != null;
       case NEW -> org.apache.lucene.util.fst2.Util.contains(newFst, key);
       case HOLDER -> org.apache.lucene.util.fst3.Util.contains(holderFst, key);
+      case HYBRID -> org.apache.lucene.util.fst4.Util.contains(hybridFst, key);
     };
   }
 
   /** Full enumeration of the FST, consuming every output. Reported per FST, not per term. */
   @Benchmark
   public void enumerateAll(Blackhole bh) throws IOException {
+    if (which == Impl.HYBRID) {
+      org.apache.lucene.util.fst4.BytesRefFSTEnum<Object> e =
+          new org.apache.lucene.util.fst4.BytesRefFSTEnum<>(hybridFst);
+      while (e.next() != null) {
+        switch (kind) {
+          case NONE -> {}
+          case LONG -> bh.consume(longValue4(e.currentOutput()));
+          case BYTES, PAIR -> bh.consume(e.currentOutput());
+        }
+      }
+      return;
+    }
     if (which == Impl.HOLDER) {
       org.apache.lucene.util.fst3.BytesRefFSTEnum<Object> e =
           new org.apache.lucene.util.fst3.BytesRefFSTEnum<>(holderFst);
@@ -540,6 +665,7 @@ public class FSTOutputsBenchmark {
       case OLD -> buildOld(kind, data).numBytes();
       case NEW -> buildNew(kind, data).numBytes();
       case HOLDER -> buildHolder(kind, data).numBytes();
+      case HYBRID -> buildHybrid(kind, data).numBytes();
     };
   }
 }
