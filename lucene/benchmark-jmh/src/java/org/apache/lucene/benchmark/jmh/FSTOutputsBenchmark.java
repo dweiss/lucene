@@ -46,8 +46,9 @@ import org.openjdk.jmh.infra.Blackhole;
 /**
  * Compares FST traversal with eager, boxed outputs ({@code org.apache.lucene.util.fst}, {@code
  * impl=old}) against lazy, position-based outputs ({@code org.apache.lucene.util.fst2}, {@code
- * impl=new}). Run with {@code -prof gc}: the decisive numbers are {@code gc.alloc.rate.norm} and
- * {@code ns/op}.
+ * impl=new}) and eager outputs decoded into reusable holders ({@code org.apache.lucene.util.fst3},
+ * {@code impl=holder}). Run with {@code -prof gc}: the decisive numbers are {@code
+ * gc.alloc.rate.norm} and {@code ns/op}.
  */
 @BenchmarkMode(Mode.AverageTime)
 @OutputTimeUnit(TimeUnit.NANOSECONDS)
@@ -57,7 +58,7 @@ import org.openjdk.jmh.infra.Blackhole;
 @Fork(1)
 public class FSTOutputsBenchmark {
 
-  @Param({"old", "new"})
+  @Param({"old", "new", "holder"})
   public String impl;
 
   @Param({"none", "long", "bytes", "pair"})
@@ -76,17 +77,25 @@ public class FSTOutputsBenchmark {
     PAIR
   }
 
+  enum Impl {
+    OLD,
+    NEW,
+    HOLDER
+  }
+
   FSTBenchmarkData data;
-  boolean isOld;
+  Impl which;
   Kind kind;
 
   org.apache.lucene.util.fst.FST<Object> oldFst;
   org.apache.lucene.util.fst2.FST<Object> newFst;
+  org.apache.lucene.util.fst3.FST<Object> holderFst;
 
   private Path tempDir;
   private Directory dir;
   private IndexInput oldIn;
   private IndexInput newIn;
+  private IndexInput holderIn;
 
   private int cursor;
   private final long[] scratch = new long[64];
@@ -98,11 +107,15 @@ public class FSTOutputsBenchmark {
   private org.apache.lucene.util.fst2.FST.BytesReader newReader;
   private final org.apache.lucene.util.fst2.FST.Arc newArc =
       new org.apache.lucene.util.fst2.FST.Arc();
+  private org.apache.lucene.util.fst3.FST.BytesReader holderReader;
+  private final org.apache.lucene.util.fst3.FST.Arc<Object> holderArc =
+      new org.apache.lucene.util.fst3.FST.Arc<>();
+  private org.apache.lucene.util.fst3.OutputHolder<Object> holderResult;
 
   @Setup(Level.Trial)
   public void setup() throws IOException {
     data = FSTBenchmarkData.generate(size, 0xF57L);
-    isOld = impl.equals("old");
+    which = Impl.valueOf(impl.toUpperCase(java.util.Locale.ROOT));
     kind = Kind.valueOf(outputs.toUpperCase(java.util.Locale.ROOT));
 
     if (store.equals("offheap")) {
@@ -110,7 +123,7 @@ public class FSTOutputsBenchmark {
       dir = new MMapDirectory(tempDir);
     }
 
-    if (isOld) {
+    if (which == Impl.OLD) {
       org.apache.lucene.util.fst.FST<Object> fst = buildOld(kind, data);
       if (dir != null) {
         try (IndexOutput out = dir.createOutput("old", IOContext.DEFAULT)) {
@@ -127,7 +140,7 @@ public class FSTOutputsBenchmark {
       }
       oldFst = fst;
       oldReader = fst.getBytesReader();
-    } else {
+    } else if (which == Impl.NEW) {
       org.apache.lucene.util.fst2.FST<Object> fst = buildNew(kind, data);
       if (dir != null) {
         try (IndexOutput out = dir.createOutput("new", IOContext.DEFAULT)) {
@@ -144,12 +157,30 @@ public class FSTOutputsBenchmark {
       }
       newFst = fst;
       newReader = fst.getBytesReader();
+    } else {
+      org.apache.lucene.util.fst3.FST<Object> fst = buildHolder(kind, data);
+      if (dir != null) {
+        try (IndexOutput out = dir.createOutput("holder", IOContext.DEFAULT)) {
+          fst.save(out, out);
+        }
+        holderIn = dir.openInput("holder", IOContext.DEFAULT);
+        org.apache.lucene.util.fst3.FST.FSTMetadata<Object> meta =
+            org.apache.lucene.util.fst3.FST.readMetadata(holderIn, holderOutputs(kind));
+        fst =
+            org.apache.lucene.util.fst3.FST.fromFSTReader(
+                meta,
+                new org.apache.lucene.util.fst3.OffHeapFSTStore(
+                    holderIn, holderIn.getFilePointer(), meta));
+      }
+      holderFst = fst;
+      holderReader = fst.getBytesReader();
+      holderResult = fst.outputs.newHolder();
     }
   }
 
   @TearDown(Level.Trial)
   public void tearDown() throws IOException {
-    IOUtils.close(oldIn, newIn, dir);
+    IOUtils.close(oldIn, newIn, holderIn, dir);
     if (tempDir != null) {
       IOUtils.rm(tempDir);
     }
@@ -165,6 +196,13 @@ public class FSTOutputsBenchmark {
   @SuppressWarnings("unchecked")
   static <X> X cast(Object o) {
     return (X) o;
+  }
+
+  /**
+   * The primitive view of a {@code PositiveIntOutputs} holder (the FST is typed as Object here).
+   */
+  static long longValue(org.apache.lucene.util.fst3.OutputHolder<?> holder) {
+    return ((org.apache.lucene.util.fst3.PositiveIntOutputs.LongHolder) holder).value;
   }
 
   static org.apache.lucene.util.fst.Outputs<Object> oldOutputs(Kind kind) {
@@ -191,6 +229,44 @@ public class FSTOutputsBenchmark {
                   org.apache.lucene.util.fst2.PositiveIntOutputs.getSingleton(),
                   org.apache.lucene.util.fst2.ByteSequenceOutputs.getSingleton()));
     };
+  }
+
+  static org.apache.lucene.util.fst3.Outputs<Object> holderOutputs(Kind kind) {
+    return switch (kind) {
+      case NONE -> cast(org.apache.lucene.util.fst3.NoOutputs.getSingleton());
+      case LONG -> cast(org.apache.lucene.util.fst3.PositiveIntOutputs.getSingleton());
+      case BYTES -> cast(org.apache.lucene.util.fst3.ByteSequenceOutputs.getSingleton());
+      case PAIR ->
+          cast(
+              new org.apache.lucene.util.fst3.PairOutputs<>(
+                  org.apache.lucene.util.fst3.PositiveIntOutputs.getSingleton(),
+                  org.apache.lucene.util.fst3.ByteSequenceOutputs.getSingleton()));
+    };
+  }
+
+  static org.apache.lucene.util.fst3.FST<Object> buildHolder(Kind kind, FSTBenchmarkData data)
+      throws IOException {
+    org.apache.lucene.util.fst3.Outputs<Object> outputs = holderOutputs(kind);
+    org.apache.lucene.util.fst3.FSTCompiler<Object> compiler =
+        new org.apache.lucene.util.fst3.FSTCompiler.Builder<>(
+                org.apache.lucene.util.fst3.FST.INPUT_TYPE.BYTE1, outputs)
+            .build();
+    IntsRefBuilder scratch = new IntsRefBuilder();
+    for (int i = 0; i < data.terms.length; i++) {
+      Object value =
+          switch (kind) {
+            case NONE -> outputs.getNoOutput();
+            case LONG -> data.longOutputs[i];
+            case BYTES -> data.bytesOutputs[i];
+            case PAIR -> {
+              org.apache.lucene.util.fst3.PairOutputs<Long, BytesRef> po = cast(outputs);
+              yield po.newPair(data.longOutputs[i], data.bytesOutputs[i]);
+            }
+          };
+      compiler.add(org.apache.lucene.util.fst3.Util.toIntsRef(data.terms[i], scratch), value);
+    }
+    return org.apache.lucene.util.fst3.FST.fromFSTReader(
+        compiler.compile(), compiler.getFSTReader());
   }
 
   static org.apache.lucene.util.fst.FST<Object> buildOld(Kind kind, FSTBenchmarkData data)
@@ -247,18 +323,29 @@ public class FSTOutputsBenchmark {
   // Benchmarks.
 
   private void lookup(BytesRef key, Blackhole bh) throws IOException {
-    if (isOld) {
-      Object v = org.apache.lucene.util.fst.Util.get(oldFst, key);
-      if (kind == Kind.NONE) {
-        bh.consume(v != null);
-      } else {
-        bh.consume(v);
+    switch (which) {
+      case OLD -> {
+        Object v = org.apache.lucene.util.fst.Util.get(oldFst, key);
+        if (kind == Kind.NONE) {
+          bh.consume(v != null);
+        } else {
+          bh.consume(v);
+        }
       }
-    } else {
-      switch (kind) {
-        case NONE -> bh.consume(org.apache.lucene.util.fst2.Util.contains(newFst, key));
-        case LONG -> bh.consume(org.apache.lucene.util.fst2.Util.getLong(newFst, key, -1));
-        case BYTES, PAIR -> bh.consume(org.apache.lucene.util.fst2.Util.get(newFst, key, scratch));
+      case NEW -> {
+        switch (kind) {
+          case NONE -> bh.consume(org.apache.lucene.util.fst2.Util.contains(newFst, key));
+          case LONG -> bh.consume(org.apache.lucene.util.fst2.Util.getLong(newFst, key, -1));
+          case BYTES, PAIR ->
+              bh.consume(org.apache.lucene.util.fst2.Util.get(newFst, key, scratch));
+        }
+      }
+      case HOLDER -> {
+        if (kind == Kind.NONE) {
+          bh.consume(org.apache.lucene.util.fst3.Util.contains(holderFst, key));
+        } else {
+          bh.consume(org.apache.lucene.util.fst3.Util.get(holderFst, key, holderResult));
+        }
       }
     }
   }
@@ -284,7 +371,11 @@ public class FSTOutputsBenchmark {
   @Benchmark
   public void lookupHitWalk(Blackhole bh) throws IOException {
     BytesRef key = data.hits[next()];
-    if (isOld) {
+    if (which == Impl.HOLDER) {
+      lookupHitWalkHolder(key, bh);
+      return;
+    }
+    if (which == Impl.OLD) {
       org.apache.lucene.util.fst.FST<Object> fst = oldFst;
       org.apache.lucene.util.fst.FST.BytesReader in = oldReader;
       org.apache.lucene.util.fst.FST.Arc<Object> arc = fst.getFirstArc(oldArc);
@@ -346,21 +437,80 @@ public class FSTOutputsBenchmark {
     }
   }
 
+  private void lookupHitWalkHolder(BytesRef key, Blackhole bh) throws IOException {
+    org.apache.lucene.util.fst3.FST<Object> fst = holderFst;
+    org.apache.lucene.util.fst3.FST.BytesReader in = holderReader;
+    org.apache.lucene.util.fst3.FST.Arc<Object> arc = fst.getFirstArc(holderArc);
+    switch (kind) {
+      case NONE -> {
+        for (int i = 0; i < key.length; i++) {
+          if (fst.findTargetArc(key.bytes[key.offset + i] & 0xFF, arc, arc, in) == null) {
+            bh.consume(false);
+            return;
+          }
+        }
+        bh.consume(arc.isFinal());
+      }
+      case LONG -> {
+        long acc = 0;
+        for (int i = 0; i < key.length; i++) {
+          if (fst.findTargetArc(key.bytes[key.offset + i] & 0xFF, arc, arc, in) == null) {
+            bh.consume(false);
+            return;
+          }
+          acc += longValue(arc.output());
+        }
+        if (arc.isFinal()) {
+          acc += longValue(arc.nextFinalOutput());
+        }
+        bh.consume(acc);
+      }
+      case BYTES, PAIR -> {
+        org.apache.lucene.util.fst3.OutputHolder<Object> acc = holderResult;
+        acc.setNoOutput();
+        for (int i = 0; i < key.length; i++) {
+          if (fst.findTargetArc(key.bytes[key.offset + i] & 0xFF, arc, arc, in) == null) {
+            bh.consume(false);
+            return;
+          }
+          fst.outputs.addInto(acc, arc.output(), acc);
+        }
+        if (arc.isFinal()) {
+          fst.outputs.addInto(acc, arc.nextFinalOutput(), acc);
+        }
+        bh.consume(acc);
+      }
+    }
+  }
+
   /** Membership only, for every outputs type: isolates skipping versus decoding. */
   @Benchmark
   public boolean contains() throws IOException {
     BytesRef key = data.hits[next()];
-    if (isOld) {
-      return org.apache.lucene.util.fst.Util.get(oldFst, key) != null;
-    } else {
-      return org.apache.lucene.util.fst2.Util.contains(newFst, key);
-    }
+    return switch (which) {
+      case OLD -> org.apache.lucene.util.fst.Util.get(oldFst, key) != null;
+      case NEW -> org.apache.lucene.util.fst2.Util.contains(newFst, key);
+      case HOLDER -> org.apache.lucene.util.fst3.Util.contains(holderFst, key);
+    };
   }
 
   /** Full enumeration of the FST, consuming every output. Reported per FST, not per term. */
   @Benchmark
   public void enumerateAll(Blackhole bh) throws IOException {
-    if (isOld) {
+    if (which == Impl.HOLDER) {
+      org.apache.lucene.util.fst3.BytesRefFSTEnum<Object> e =
+          new org.apache.lucene.util.fst3.BytesRefFSTEnum<>(holderFst);
+      org.apache.lucene.util.fst3.BytesRefFSTEnum.InputOutput<Object> io;
+      while ((io = e.next()) != null) {
+        switch (kind) {
+          case NONE -> {}
+          case LONG -> bh.consume(longValue(io.output));
+          case BYTES, PAIR -> bh.consume(io.output);
+        }
+      }
+      return;
+    }
+    if (which == Impl.OLD) {
       org.apache.lucene.util.fst.BytesRefFSTEnum<Object> e =
           new org.apache.lucene.util.fst.BytesRefFSTEnum<>(oldFst);
       org.apache.lucene.util.fst.BytesRefFSTEnum.InputOutput<Object> io;
@@ -386,10 +536,10 @@ public class FSTOutputsBenchmark {
   @Benchmark
   @Measurement(iterations = 5, time = 5)
   public long construct() throws IOException {
-    if (isOld) {
-      return buildOld(kind, data).numBytes();
-    } else {
-      return buildNew(kind, data).numBytes();
-    }
+    return switch (which) {
+      case OLD -> buildOld(kind, data).numBytes();
+      case NEW -> buildNew(kind, data).numBytes();
+      case HOLDER -> buildHolder(kind, data).numBytes();
+    };
   }
 }

@@ -1664,7 +1664,7 @@ public class TestFST3s extends LuceneTestCase {
 
       assertTrue(matches.size() > 0);
       matches.sort(
-          new TieBreakByInputComparator<Pair<Long, Long>>(Comparator.comparing(p -> p.output1)));
+          new TieBreakByInputComparator<>(Comparator.comparing((Pair<Long, Long> p) -> p.output1)));
       if (matches.size() > topN) {
         matches.subList(topN, matches.size()).clear();
       }
