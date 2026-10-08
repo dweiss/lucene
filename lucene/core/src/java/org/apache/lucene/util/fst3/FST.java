@@ -59,6 +59,10 @@ import org.apache.lucene.util.RamUsageEstimator;
  *
  * <p>See the {@link org.apache.lucene.util.fst3 package documentation} for some simple examples.
  *
+ * <p>Unlike {@link org.apache.lucene.util.fst.FST}, this experimental variant decodes arc outputs
+ * into mutable, reusable {@link OutputHolder}s owned by each {@link Arc}, so traversal does not
+ * allocate once an arc's holders exist.
+ *
  * @lucene.experimental
  */
 public final class FST<T> implements Accountable {
@@ -150,13 +154,15 @@ public final class FST<T> implements Accountable {
 
     private int label;
 
-    private T output;
+    /** Holder of this arc's output; created on first use, reused afterwards. */
+    private OutputHolder<T> output;
 
     private long target;
 
     private byte flags;
 
-    private T nextFinalOutput;
+    /** Holder of the target node's final output; created on first use, reused afterwards. */
+    private OutputHolder<T> nextFinalOutput;
 
     private long nextArc;
 
@@ -199,8 +205,11 @@ public final class FST<T> implements Accountable {
       label = other.label();
       target = other.target();
       flags = other.flags();
-      output = other.output();
-      nextFinalOutput = other.nextFinalOutput();
+      if (other.output != null) {
+        ensureHoldersLike(other);
+        output.copyFrom(other.output);
+        nextFinalOutput.copyFrom(other.nextFinalOutput);
+      }
       nextArc = other.nextArc();
       nodeFlags = other.nodeFlags();
       bytesPerArc = other.bytesPerArc();
@@ -223,6 +232,22 @@ public final class FST<T> implements Accountable {
 
     boolean flag(int flag) {
       return FST.flag(flags, flag);
+    }
+
+    /** Creates this arc's holders if needed, using the given outputs. */
+    void ensureHolders(Outputs<T> outputs) {
+      if (output == null) {
+        output = outputs.newHolder();
+        nextFinalOutput = outputs.newHolder();
+      }
+    }
+
+    /** Creates this arc's holders if needed, using the other arc's holders as templates. */
+    void ensureHoldersLike(Arc<T> other) {
+      if (output == null) {
+        output = other.output.newHolder();
+        nextFinalOutput = other.nextFinalOutput.newHolder();
+      }
     }
 
     public boolean isLast() {
@@ -276,7 +301,13 @@ public final class FST<T> implements Accountable {
       return label;
     }
 
-    public T output() {
+    /**
+     * This arc's output, in a holder owned by this arc. The holder is overwritten by the next read
+     * into this arc, so copy it if it must outlive that. Callers that know the outputs type may
+     * cast it once (e.g. to {@link PositiveIntOutputs.LongHolder}) and read the primitive after
+     * every read into this arc.
+     */
+    public OutputHolder<T> output() {
       return output;
     }
 
@@ -289,7 +320,11 @@ public final class FST<T> implements Accountable {
       return flags;
     }
 
-    public T nextFinalOutput() {
+    /**
+     * The final output of this arc's target node, in a holder owned by this arc; see {@link
+     * #output()}.
+     */
+    public OutputHolder<T> nextFinalOutput() {
       return nextFinalOutput;
     }
 
@@ -589,18 +624,19 @@ public final class FST<T> implements Accountable {
   /** Fills virtual 'start' arc, ie, an empty incoming arc to the FST's start node */
   public Arc<T> getFirstArc(Arc<T> arc) {
     T NO_OUTPUT = outputs.getNoOutput();
+    arc.ensureHolders(outputs);
 
     if (metadata.emptyOutput != null) {
       arc.flags = BIT_FINAL_ARC | BIT_LAST_ARC;
-      arc.nextFinalOutput = metadata.emptyOutput;
+      arc.nextFinalOutput.set(metadata.emptyOutput);
       if (metadata.emptyOutput != NO_OUTPUT) {
         arc.flags = (byte) (arc.flags() | BIT_ARC_HAS_FINAL_OUTPUT);
       }
     } else {
       arc.flags = BIT_LAST_ARC;
-      arc.nextFinalOutput = NO_OUTPUT;
+      arc.nextFinalOutput.setNoOutput();
     }
-    arc.output = NO_OUTPUT;
+    arc.output.setNoOutput();
 
     // If there are no nodes, ie, the FST only accepts the
     // empty string, then startNode is 0
@@ -621,7 +657,8 @@ public final class FST<T> implements Accountable {
       assert follow.isFinal();
       arc.label = END_LABEL;
       arc.target = FINAL_END_NODE;
-      arc.output = follow.nextFinalOutput();
+      arc.ensureHoldersLike(follow);
+      arc.output.copyFrom(follow.nextFinalOutput);
       arc.flags = BIT_LAST_ARC;
       arc.nodeFlags = arc.flags;
     } else {
@@ -697,7 +734,8 @@ public final class FST<T> implements Accountable {
     if (follow.isFinal()) {
       // Insert "fake" final first arc:
       arc.label = END_LABEL;
-      arc.output = follow.nextFinalOutput();
+      arc.ensureHoldersLike(follow);
+      arc.output.copyFrom(follow.nextFinalOutput);
       arc.flags = BIT_FINAL_ARC;
       if (follow.target() <= 0) {
         arc.flags |= BIT_LAST_ARC;
@@ -940,16 +978,17 @@ public final class FST<T> implements Accountable {
       arc.label = readLabel(in);
     }
 
+    arc.ensureHolders(outputs);
     if (arc.flag(BIT_ARC_HAS_OUTPUT)) {
-      arc.output = outputs.read(in);
+      outputs.readInto(in, arc.output);
     } else {
-      arc.output = outputs.getNoOutput();
+      arc.output.setNoOutput();
     }
 
     if (arc.flag(BIT_ARC_HAS_FINAL_OUTPUT)) {
-      arc.nextFinalOutput = outputs.readFinalOutput(in);
+      outputs.readFinalOutputInto(in, arc.nextFinalOutput);
     } else {
-      arc.nextFinalOutput = outputs.getNoOutput();
+      arc.nextFinalOutput.setNoOutput();
     }
 
     if (arc.flag(BIT_STOP_NODE)) {
@@ -992,7 +1031,8 @@ public final class FST<T> implements Accountable {
         // NOTE: nextArc is a node (not an address!) in this case:
         arc.nextArc = follow.target();
       }
-      arc.output = follow.nextFinalOutput();
+      arc.ensureHoldersLike(follow);
+      arc.output.copyFrom(follow.nextFinalOutput);
       arc.label = FST.END_LABEL;
       return arc;
     } else {
@@ -1019,7 +1059,8 @@ public final class FST<T> implements Accountable {
           // NOTE: nextArc is a node (not an address!) in this case:
           arc.nextArc = follow.target();
         }
-        arc.output = follow.nextFinalOutput();
+        arc.ensureHoldersLike(follow);
+        arc.output.copyFrom(follow.nextFinalOutput);
         arc.label = END_LABEL;
         arc.nodeFlags = arc.flags;
         return arc;

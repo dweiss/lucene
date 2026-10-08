@@ -21,6 +21,7 @@ import java.util.Arrays;
 import org.apache.lucene.store.DataInput;
 import org.apache.lucene.store.DataOutput;
 import org.apache.lucene.util.BytesRef;
+import org.apache.lucene.util.BytesRefBuilder;
 import org.apache.lucene.util.RamUsageEstimator;
 import org.apache.lucene.util.StringHelper;
 
@@ -129,6 +130,66 @@ public final class ByteSequenceOutputs extends Outputs<BytesRef> {
       output.length = len;
       return output;
     }
+  }
+
+  /** Holder backed by a reusable {@link BytesRefBuilder}. */
+  public static final class BytesHolder extends OutputHolder<BytesRef> {
+    public final BytesRefBuilder bytes = new BytesRefBuilder();
+
+    @Override
+    public BytesHolder newHolder() {
+      return new BytesHolder();
+    }
+
+    @Override
+    public void setNoOutput() {
+      bytes.clear();
+    }
+
+    @Override
+    public boolean isNoOutput() {
+      return bytes.length() == 0;
+    }
+
+    @Override
+    public void copyFrom(OutputHolder<BytesRef> other) {
+      bytes.copyBytes(((BytesHolder) other).bytes.get());
+    }
+
+    @Override
+    public BytesRef get() {
+      return bytes.length() == 0 ? NO_OUTPUT : bytes.toBytesRef();
+    }
+
+    @Override
+    public void set(BytesRef value) {
+      bytes.copyBytes(value);
+    }
+  }
+
+  @Override
+  public BytesHolder newHolder() {
+    return new BytesHolder();
+  }
+
+  @Override
+  public void readInto(DataInput in, OutputHolder<BytesRef> dest) throws IOException {
+    final BytesRefBuilder b = ((BytesHolder) dest).bytes;
+    final int len = in.readVInt();
+    b.growNoCopy(len);
+    in.readBytes(b.bytes(), 0, len);
+    b.setLength(len);
+  }
+
+  @Override
+  public void addInto(
+      OutputHolder<BytesRef> prefix, OutputHolder<BytesRef> output, OutputHolder<BytesRef> dest) {
+    assert dest != output;
+    final BytesRefBuilder d = ((BytesHolder) dest).bytes;
+    if (dest != prefix) {
+      d.copyBytes(((BytesHolder) prefix).bytes.get());
+    }
+    d.append(((BytesHolder) output).bytes.get());
   }
 
   @Override

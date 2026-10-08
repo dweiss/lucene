@@ -21,6 +21,7 @@ import java.util.Arrays;
 import org.apache.lucene.store.DataInput;
 import org.apache.lucene.store.DataOutput;
 import org.apache.lucene.util.IntsRef;
+import org.apache.lucene.util.IntsRefBuilder;
 import org.apache.lucene.util.RamUsageEstimator;
 
 /**
@@ -129,6 +130,73 @@ public final class IntSequenceOutputs extends Outputs<IntsRef> {
       output.length = len;
       return output;
     }
+  }
+
+  /** Holder backed by a reusable {@link IntsRefBuilder}. */
+  public static final class IntsHolder extends OutputHolder<IntsRef> {
+    public final IntsRefBuilder ints = new IntsRefBuilder();
+
+    @Override
+    public IntsHolder newHolder() {
+      return new IntsHolder();
+    }
+
+    @Override
+    public void setNoOutput() {
+      ints.clear();
+    }
+
+    @Override
+    public boolean isNoOutput() {
+      return ints.length() == 0;
+    }
+
+    @Override
+    public void copyFrom(OutputHolder<IntsRef> other) {
+      ints.copyInts(((IntsHolder) other).ints.get());
+    }
+
+    @Override
+    public IntsRef get() {
+      return ints.length() == 0 ? NO_OUTPUT : ints.toIntsRef();
+    }
+
+    @Override
+    public void set(IntsRef value) {
+      ints.copyInts(value);
+    }
+  }
+
+  @Override
+  public IntsHolder newHolder() {
+    return new IntsHolder();
+  }
+
+  @Override
+  public void readInto(DataInput in, OutputHolder<IntsRef> dest) throws IOException {
+    final IntsRefBuilder b = ((IntsHolder) dest).ints;
+    final int len = in.readVInt();
+    b.growNoCopy(len);
+    final int[] arr = b.ints();
+    for (int idx = 0; idx < len; idx++) {
+      arr[idx] = in.readVInt();
+    }
+    b.setLength(len);
+  }
+
+  @Override
+  public void addInto(
+      OutputHolder<IntsRef> prefix, OutputHolder<IntsRef> output, OutputHolder<IntsRef> dest) {
+    assert dest != output;
+    final IntsRefBuilder d = ((IntsHolder) dest).ints;
+    if (dest != prefix) {
+      d.copyInts(((IntsHolder) prefix).ints.get());
+    }
+    final IntsRef o = ((IntsHolder) output).ints.get();
+    final int len = d.length();
+    d.grow(len + o.length);
+    System.arraycopy(o.ints, o.offset, d.ints(), len, o.length);
+    d.setLength(len + o.length);
   }
 
   @Override

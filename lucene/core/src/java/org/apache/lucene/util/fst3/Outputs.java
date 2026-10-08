@@ -87,6 +87,32 @@ public abstract class Outputs<T> {
    */
   public abstract T getNoOutput();
 
+  // *** Allocation-free read side: mutable holders.
+
+  /** Creates a new, reusable holder for an output value, initialized to {@link #getNoOutput()}. */
+  public abstract OutputHolder<T> newHolder();
+
+  /**
+   * Decode an output value previously written with {@link #write(Object, DataOutput)} into {@code
+   * dest}, reusing its storage.
+   */
+  public abstract void readInto(DataInput in, OutputHolder<T> dest) throws IOException;
+
+  /**
+   * Decode an output value previously written with {@link #writeFinalOutput(Object, DataOutput)}
+   * into {@code dest}. By default this just calls {@link #readInto}.
+   */
+  public void readFinalOutputInto(DataInput in, OutputHolder<T> dest) throws IOException {
+    readInto(in, dest);
+  }
+
+  /**
+   * Computes {@code dest = prefix + output} (the holder twin of {@link #add}). {@code dest} may be
+   * the same holder as {@code prefix}; it must not be the same holder as {@code output}.
+   */
+  public abstract void addInto(
+      OutputHolder<T> prefix, OutputHolder<T> output, OutputHolder<T> dest);
+
   public abstract String outputToString(T output);
 
   // TODO: maybe make valid(T output) public...?  for asserts

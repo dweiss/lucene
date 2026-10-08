@@ -33,11 +33,10 @@ abstract class FSTEnum<T> {
   @SuppressWarnings({"rawtypes", "unchecked"})
   protected FST.Arc<T>[] arcs = new FST.Arc[10];
 
-  // outputs are cumulative
+  // outputs are cumulative; one reusable holder per depth, created lazily
   @SuppressWarnings({"rawtypes", "unchecked"})
-  protected T[] output = (T[]) new Object[10];
+  protected OutputHolder<T>[] output = (OutputHolder<T>[]) new OutputHolder[10];
 
-  protected final T NO_OUTPUT;
   protected final FST.BytesReader fstReader;
 
   protected int upto;
@@ -50,9 +49,17 @@ abstract class FSTEnum<T> {
   FSTEnum(FST<T> fst) {
     this.fst = fst;
     fstReader = fst.getBytesReader();
-    NO_OUTPUT = fst.outputs.getNoOutput();
     fst.getFirstArc(getArc(0));
-    output[0] = NO_OUTPUT;
+    output[0] = fst.outputs.newHolder();
+  }
+
+  /** output[upto] = output[upto - 1] + arc.output, into the reusable holder at this depth. */
+  private void pushOutput(FST.Arc<T> arc) {
+    OutputHolder<T> dest = output[upto];
+    if (dest == null) {
+      dest = output[upto] = output[0].newHolder();
+    }
+    fst.outputs.addInto(output[upto - 1], arc.output(), dest);
   }
 
   protected abstract int getTargetLabel();
@@ -177,7 +184,7 @@ abstract class FSTEnum<T> {
         fst.readArcByContinuous(arc, in, targetIndex);
         assert arc.label() == targetLabel;
         // found -- copy pasta from below
-        output[upto] = fst.outputs.add(output[upto - 1], arc.output());
+        pushOutput(arc);
         if (targetLabel == FST.END_LABEL) {
           return null;
         }
@@ -204,7 +211,7 @@ abstract class FSTEnum<T> {
         fst.readArcByDirectAddressing(arc, in, targetIndex);
         assert arc.label() == targetLabel;
         // found -- copy pasta from below
-        output[upto] = fst.outputs.add(output[upto - 1], arc.output());
+        pushOutput(arc);
         if (targetLabel == FST.END_LABEL) {
           return null;
         }
@@ -232,7 +239,7 @@ abstract class FSTEnum<T> {
       assert arc.arcIdx() == idx;
       assert arc.label() == targetLabel
           : "arc.label=" + arc.label() + " vs targetLabel=" + targetLabel + " mid=" + idx;
-      output[upto] = fst.outputs.add(output[upto - 1], arc.output());
+      pushOutput(arc);
       if (targetLabel == FST.END_LABEL) {
         return null;
       }
@@ -276,7 +283,7 @@ abstract class FSTEnum<T> {
     // Arcs are not array'd -- must do linear scan:
     if (arc.label() == targetLabel) {
       // recurse
-      output[upto] = fst.outputs.add(output[upto - 1], arc.output());
+      pushOutput(arc);
       if (targetLabel == FST.END_LABEL) {
         return null;
       }
@@ -375,7 +382,7 @@ abstract class FSTEnum<T> {
       fst.readArcByContinuous(arc, in, targetIndex);
       assert arc.label() == targetLabel;
       // found -- copy pasta from below
-      output[upto] = fst.outputs.add(output[upto - 1], arc.output());
+      pushOutput(arc);
       if (targetLabel == FST.END_LABEL) {
         return null;
       }
@@ -407,7 +414,7 @@ abstract class FSTEnum<T> {
         fst.readArcByDirectAddressing(arc, in, targetIndex);
         assert arc.label() == targetLabel;
         // found -- copy pasta from below
-        output[upto] = fst.outputs.add(output[upto - 1], arc.output());
+        pushOutput(arc);
         if (targetLabel == FST.END_LABEL) {
           return null;
         }
@@ -566,7 +573,7 @@ abstract class FSTEnum<T> {
       assert arc.arcIdx() == idx;
       assert arc.label() == targetLabel
           : "arc.label=" + arc.label() + " vs targetLabel=" + targetLabel + " mid=" + idx;
-      output[upto] = fst.outputs.add(output[upto - 1], arc.output());
+      pushOutput(arc);
       if (targetLabel == FST.END_LABEL) {
         return null;
       }
@@ -590,7 +597,7 @@ abstract class FSTEnum<T> {
   private FST.Arc<T> doSeekFloorList(FST.Arc<T> arc, int targetLabel) throws IOException {
     if (arc.label() == targetLabel) {
       // Match -- recurse
-      output[upto] = fst.outputs.add(output[upto - 1], arc.output());
+      pushOutput(arc);
       if (targetLabel == FST.END_LABEL) {
         return null;
       }
@@ -670,7 +677,7 @@ abstract class FSTEnum<T> {
         return false;
       }
       // Match -- recurse:
-      output[upto] = fst.outputs.add(output[upto - 1], nextArc.output());
+      pushOutput(nextArc);
       if (targetLabel == FST.END_LABEL) {
         // System.out.println("  return found; upto=" + upto + " output=" + output[upto] + "
         // nextArc=" + nextArc.isLast());
@@ -695,8 +702,10 @@ abstract class FSTEnum<T> {
     }
     if (output.length <= upto) {
       @SuppressWarnings({"rawtypes", "unchecked"})
-      final T[] newOutput =
-          (T[]) new Object[ArrayUtil.oversize(1 + upto, RamUsageEstimator.NUM_BYTES_OBJECT_REF)];
+      final OutputHolder<T>[] newOutput =
+          (OutputHolder<T>[])
+              new OutputHolder
+                  [ArrayUtil.oversize(1 + upto, RamUsageEstimator.NUM_BYTES_OBJECT_REF)];
       System.arraycopy(output, 0, newOutput, 0, output.length);
       output = newOutput;
     }
@@ -710,7 +719,7 @@ abstract class FSTEnum<T> {
     assert arc != null;
 
     while (true) {
-      output[upto] = fst.outputs.add(output[upto - 1], arc.output());
+      pushOutput(arc);
       if (arc.label() == FST.END_LABEL) {
         // Final node
         break;
@@ -735,7 +744,7 @@ abstract class FSTEnum<T> {
 
     while (true) {
       setCurrentLabel(arc.label());
-      output[upto] = fst.outputs.add(output[upto - 1], arc.output());
+      pushOutput(arc);
       if (arc.label() == FST.END_LABEL) {
         // Final node
         break;

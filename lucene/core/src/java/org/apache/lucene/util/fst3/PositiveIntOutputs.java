@@ -17,6 +17,7 @@
 package org.apache.lucene.util.fst3;
 
 import java.io.IOException;
+import java.util.Comparator;
 import org.apache.lucene.store.DataInput;
 import org.apache.lucene.store.DataOutput;
 import org.apache.lucene.util.RamUsageEstimator;
@@ -33,6 +34,66 @@ public final class PositiveIntOutputs extends Outputs<Long> {
   private static final PositiveIntOutputs singleton = new PositiveIntOutputs();
 
   private PositiveIntOutputs() {}
+
+  /** Holder exposing the output as a primitive {@code long} ({@code 0} is no output). */
+  public static final class LongHolder extends OutputHolder<Long> {
+    public long value;
+
+    @Override
+    public LongHolder newHolder() {
+      return new LongHolder();
+    }
+
+    @Override
+    public void setNoOutput() {
+      value = 0;
+    }
+
+    @Override
+    public boolean isNoOutput() {
+      return value == 0;
+    }
+
+    @Override
+    public void copyFrom(OutputHolder<Long> other) {
+      value = ((LongHolder) other).value;
+    }
+
+    @Override
+    public Long get() {
+      return value == 0 ? NO_OUTPUT : Long.valueOf(value);
+    }
+
+    @Override
+    public void set(Long v) {
+      value = v;
+    }
+  }
+
+  /** Orders {@link LongHolder}s by value; for {@link Util#shortestPaths}. */
+  public static final Comparator<OutputHolder<Long>> HOLDER_COMPARATOR =
+      (a, b) -> Long.compare(((LongHolder) a).value, ((LongHolder) b).value);
+
+  @Override
+  public LongHolder newHolder() {
+    return new LongHolder();
+  }
+
+  @Override
+  public void readInto(DataInput in, OutputHolder<Long> dest) throws IOException {
+    ((LongHolder) dest).value = in.readVLong();
+  }
+
+  @Override
+  public void addInto(
+      OutputHolder<Long> prefix, OutputHolder<Long> output, OutputHolder<Long> dest) {
+    ((LongHolder) dest).value = ((LongHolder) prefix).value + ((LongHolder) output).value;
+  }
+
+  @Override
+  public void skipOutput(DataInput in) throws IOException {
+    in.readVLong();
+  }
 
   public static PositiveIntOutputs getSingleton() {
     return singleton;

@@ -21,6 +21,7 @@ import java.util.Arrays;
 import org.apache.lucene.store.DataInput;
 import org.apache.lucene.store.DataOutput;
 import org.apache.lucene.util.CharsRef;
+import org.apache.lucene.util.CharsRefBuilder;
 import org.apache.lucene.util.RamUsageEstimator;
 
 /**
@@ -130,6 +131,70 @@ public final class CharSequenceOutputs extends Outputs<CharsRef> {
       output.length = len;
       return output;
     }
+  }
+
+  /** Holder backed by a reusable {@link CharsRefBuilder}. */
+  public static final class CharsHolder extends OutputHolder<CharsRef> {
+    public final CharsRefBuilder chars = new CharsRefBuilder();
+
+    @Override
+    public CharsHolder newHolder() {
+      return new CharsHolder();
+    }
+
+    @Override
+    public void setNoOutput() {
+      chars.clear();
+    }
+
+    @Override
+    public boolean isNoOutput() {
+      return chars.length() == 0;
+    }
+
+    @Override
+    public void copyFrom(OutputHolder<CharsRef> other) {
+      chars.copyChars(((CharsHolder) other).chars.get());
+    }
+
+    @Override
+    public CharsRef get() {
+      return chars.length() == 0 ? NO_OUTPUT : chars.toCharsRef();
+    }
+
+    @Override
+    public void set(CharsRef value) {
+      chars.copyChars(value);
+    }
+  }
+
+  @Override
+  public CharsHolder newHolder() {
+    return new CharsHolder();
+  }
+
+  @Override
+  public void readInto(DataInput in, OutputHolder<CharsRef> dest) throws IOException {
+    final CharsRefBuilder b = ((CharsHolder) dest).chars;
+    final int len = in.readVInt();
+    b.grow(len);
+    final char[] arr = b.chars();
+    for (int idx = 0; idx < len; idx++) {
+      arr[idx] = (char) in.readVInt();
+    }
+    b.setLength(len);
+  }
+
+  @Override
+  public void addInto(
+      OutputHolder<CharsRef> prefix, OutputHolder<CharsRef> output, OutputHolder<CharsRef> dest) {
+    assert dest != output;
+    final CharsRefBuilder d = ((CharsHolder) dest).chars;
+    if (dest != prefix) {
+      d.copyChars(((CharsHolder) prefix).chars.get());
+    }
+    final CharsRef o = ((CharsHolder) output).chars.get();
+    d.append(o.chars, o.offset, o.length);
   }
 
   @Override

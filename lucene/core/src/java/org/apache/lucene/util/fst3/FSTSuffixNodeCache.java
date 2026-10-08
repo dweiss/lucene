@@ -408,8 +408,10 @@ final class FSTSuffixNodeCache<T> implements Accountable {
       while (true) {
         h = PRIME * h + scratchArc.label();
         h = PRIME * h + (int) (scratchArc.target() ^ (scratchArc.target() >> 32));
-        h = PRIME * h + scratchArc.output().hashCode();
-        h = PRIME * h + scratchArc.nextFinalOutput().hashCode();
+        // TODO: holders could hash their content directly; boxing here keeps construction
+        // unchanged.
+        h = PRIME * h + scratchArc.output().get().hashCode();
+        h = PRIME * h + scratchArc.nextFinalOutput().get().hashCode();
         if (scratchArc.isFinal()) {
           h += 17;
         }
@@ -469,9 +471,9 @@ final class FSTSuffixNodeCache<T> implements Accountable {
       for (int arcUpto = 0; arcUpto < node.numArcs; arcUpto++) {
         final FSTCompiler.Arc<T> arc = node.arcs[arcUpto];
         if (arc.label != scratchArc.label()
-            || arc.output.equals(scratchArc.output()) == false
+            || arc.output.equals(scratchArc.output().get()) == false
             || ((FSTCompiler.CompiledNode) arc.target).node != scratchArc.target()
-            || arc.nextFinalOutput.equals(scratchArc.nextFinalOutput()) == false
+            || arc.nextFinalOutput.equals(scratchArc.nextFinalOutput().get()) == false
             || arc.isFinal != scratchArc.isFinal()) {
           return -1;
         }

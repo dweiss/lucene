@@ -30,10 +30,13 @@ public final class BytesRefFSTEnum<T> extends FSTEnum<T> {
   private final InputOutput<T> result = new InputOutput<>();
   private BytesRef target;
 
-  /** Holds a single input (BytesRef) + output pair. */
+  /**
+   * Holds a single input (BytesRef) + output pair. The output is a holder owned by the enum; it is
+   * overwritten by the next call that moves the enum, so copy it if it must outlive that.
+   */
   public static class InputOutput<T> {
     public BytesRef input;
-    public T output;
+    public OutputHolder<T> output;
   }
 
   /**

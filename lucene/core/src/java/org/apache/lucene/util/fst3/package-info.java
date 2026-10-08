@@ -16,33 +16,36 @@
  */
 
 /**
- * Finite state transducers
+ * Experimental finite state transducers with eager but allocation-free outputs ("holder" design).
  *
- * <p>This package implements <a href="http://en.wikipedia.org/wiki/Finite_state_transducer">Finite
- * State Transducers</a> with the following characteristics:
+ * <p>This package is a copy of {@link org.apache.lucene.util.fst} with one change to the traversal
+ * API: arc outputs are decoded into mutable, reusable {@link
+ * org.apache.lucene.util.fst3.OutputHolder holders} owned by each {@link
+ * org.apache.lucene.util.fst3.FST.Arc} ({@link org.apache.lucene.util.fst3.FST.Arc#output()},
+ * {@link org.apache.lucene.util.fst3.FST.Arc#nextFinalOutput()}) instead of into freshly allocated
+ * boxed values. {@link org.apache.lucene.util.fst3.Outputs} gained {@link
+ * org.apache.lucene.util.fst3.Outputs#newHolder()}, {@link
+ * org.apache.lucene.util.fst3.Outputs#readInto} and {@link
+ * org.apache.lucene.util.fst3.Outputs#addInto}; each implementation defines its holder (for example
+ * {@link org.apache.lucene.util.fst3.PositiveIntOutputs.LongHolder} with a public {@code long
+ * value}). Traversal stays eager (every arc output is decoded when the arc is read) but allocates
+ * nothing once the holders exist. The enumerators keep a cumulative stack of holders, {@link
+ * org.apache.lucene.util.fst3.Util#get(FST, org.apache.lucene.util.BytesRef, OutputHolder)} fills a
+ * caller-supplied holder, and {@link org.apache.lucene.util.fst3.Util.TopNSearcher} compares and
+ * accumulates holders.
  *
- * <ul>
- *   <li>Fast and low memory overhead construction of the minimal FST (but inputs must be provided
- *       in sorted order)
- *   <li>Low object overhead and quick deserialization (byte[] representation)
- *   <li>Pluggable {@link org.apache.lucene.util.fst3.Outputs Outputs} representation
- *   <li>{@link org.apache.lucene.util.fst3.Util#shortestPaths N-shortest-paths} search by weight
- *   <li>Enumerators ({@link org.apache.lucene.util.fst3.IntsRefFSTEnum IntsRef} and {@link
- *       org.apache.lucene.util.fst3.BytesRefFSTEnum BytesRef}) that behave like {@link
- *       java.util.SortedMap SortedMap} iterators
- * </ul>
+ * <p>Construction ({@link org.apache.lucene.util.fst3.FSTCompiler}) is deliberately unchanged and
+ * still works on boxed values; the serialized format is identical to that of {@link
+ * org.apache.lucene.util.fst.FST}, so FSTs can be exchanged between the packages.
  *
  * <p>FST Construction example:
  *
  * <pre><code class="language-java">
- *     // Input values (keys). These must be provided to Builder in Unicode code point (UTF8 or UTF32) sorted order.
- *     // Note that sorting by Java's String.compareTo, which is UTF16 sorted order, is not correct and can lead to
- *     // exceptions while building the FST:
  *     String inputValues[] = {"cat", "dog", "dogs"};
  *     long outputValues[] = {5, 7, 12};
  *
  *     PositiveIntOutputs outputs = PositiveIntOutputs.getSingleton();
- *     FSTCompiler&lt;Long&gt; fstCompiler = new FSTCompiler&lt;Long&gt;(INPUT_TYPE.BYTE1, outputs);
+ *     FSTCompiler&lt;Long&gt; fstCompiler = new FSTCompiler.Builder&lt;&gt;(INPUT_TYPE.BYTE1, outputs).build();
  *     BytesRefBuilder scratchBytes = new BytesRefBuilder();
  *     IntsRefBuilder scratchInts = new IntsRefBuilder();
  *     for (int i = 0; i &lt; inputValues.length; i++) {
@@ -52,47 +55,37 @@
  *     FST&lt;Long&gt; fst = FST.fromFSTReader(fstCompiler.compile(), fstCompiler.getFSTReader());
  * </code></pre>
  *
- * Retrieval by key:
+ * Retrieval by key, boxed or into a reusable holder:
  *
  * <pre><code class="language-java">
- *     Long value = Util.get(fst, new BytesRef("dog"));
- *     System.out.println(value); // 7
- * </code></pre>
- *
- * Retrieval by value:
- *
- * <pre><code class="language-java">
- *     // Only works because outputs are also in sorted order
- *     IntsRef key = Util.getByOutput(fst, 12);
- *     System.out.println(Util.toBytesRef(key, scratchBytes).utf8ToString()); // dogs
+ *     Long value = Util.get(fst, new BytesRef("dog"));           // 7, boxed
+ *     PositiveIntOutputs.LongHolder holder = outputs.newHolder();
+ *     if (Util.get(fst, new BytesRef("dog"), holder)) {
+ *       System.out.println(holder.value);                          // 7, no allocation
+ *     }
  * </code></pre>
  *
  * Iterate over key-value pairs in sorted order:
  *
  * <pre><code class="language-java">
- *     // Like TermsEnum, this also supports seeking (advance)
- *     BytesRefFSTEnum&lt;Long&gt; iterator = new BytesRefFSTEnum&lt;Long&gt;(fst);
- *     while (iterator.next() != null) {
- *       InputOutput&lt;Long&gt; mapEntry = iterator.current();
+ *     BytesRefFSTEnum&lt;Long&gt; iterator = new BytesRefFSTEnum&lt;&gt;(fst);
+ *     BytesRefFSTEnum.InputOutput&lt;Long&gt; mapEntry;
+ *     while ((mapEntry = iterator.next()) != null) {
  *       System.out.println(mapEntry.input.utf8ToString());
- *       System.out.println(mapEntry.output);
+ *       System.out.println(((PositiveIntOutputs.LongHolder) mapEntry.output).value);
  *     }
  * </code></pre>
  *
  * N-shortest paths by weight:
  *
  * <pre><code class="language-java">
- *     Comparator&lt;Long&gt; comparator = new Comparator&lt;Long&gt;() {
- *       public int compare(Long left, Long right) {
- *         return left.compareTo(right);
- *       }
- *     };
- *     Arc&lt;Long&gt; firstArc = fst.getFirstArc(new Arc&lt;Long&gt;());
- *     Util.TopResults&lt;Long&gt; paths = Util.shortestPaths(fst, firstArc, fst.outputs.getNoOutput(), comparator, 3, true);
- *     System.out.println(Util.toBytesRef(paths.topN.get(0).input, scratchBytes).utf8ToString()); // cat
- *     System.out.println(paths.topN.get(0).output); // 5
- *     System.out.println(Util.toBytesRef(paths.topN.get(1).input, scratchBytes).utf8ToString()); // dog
- *     System.out.println(paths.topN.get(1).output); // 7
+ *     Arc&lt;Long&gt; firstArc = fst.getFirstArc(new Arc&lt;&gt;());
+ *     Util.TopResults&lt;Long&gt; paths =
+ *         Util.shortestPaths(fst, firstArc, outputs.newHolder(), PositiveIntOutputs.HOLDER_COMPARATOR, 3, true);
+ *     System.out.println(Util.toBytesRef(paths.topN.get(0).input(), scratchBytes).utf8ToString()); // cat
+ *     System.out.println(paths.topN.get(0).output()); // 5
  * </code></pre>
+ *
+ * @lucene.experimental
  */
 package org.apache.lucene.util.fst3;

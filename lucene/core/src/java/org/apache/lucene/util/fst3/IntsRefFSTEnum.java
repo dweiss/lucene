@@ -30,10 +30,13 @@ public final class IntsRefFSTEnum<T> extends FSTEnum<T> {
   private final InputOutput<T> result = new InputOutput<>();
   private IntsRef target;
 
-  /** Holds a single input (IntsRef) + output pair. */
+  /**
+   * Holds a single input (IntsRef) + output pair. The output is a holder owned by the enum; it is
+   * overwritten by the next call that moves the enum, so copy it if it must outlive that.
+   */
   public static class InputOutput<T> {
     public IntsRef input;
-    public T output;
+    public OutputHolder<T> output;
   }
 
   /**
