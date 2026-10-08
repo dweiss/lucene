@@ -404,7 +404,7 @@ same old/new compat test including byte-identical files, same showcase pairs, sa
 
 ### 6.1 Three-way benchmark tables
 
-Superseded by the four-way tables in section 9 (same `old`/`new` runs, plus the `holder` run from
+Superseded by the five-way tables in section 9 (same `old`/`new` runs, plus the `holder` run from
 `fst3-*.json`). The notes below refer to those numbers.
 
 ### 6.2 Reading the holder numbers
