@@ -48,8 +48,10 @@ import org.openjdk.jmh.infra.Blackhole;
  * impl=old}) against lazy, position-based outputs ({@code org.apache.lucene.util.fst2}, {@code
  * impl=new}) and eager outputs decoded into reusable holders ({@code org.apache.lucene.util.fst3},
  * {@code impl=holder}) and the hybrid of the two: lazy positions accumulated into holders ({@code
- * org.apache.lucene.util.fst4}, {@code impl=hybrid}). Run with {@code -prof gc}: the decisive
- * numbers are {@code gc.alloc.rate.norm} and {@code ns/op}.
+ * org.apache.lucene.util.fst4}, {@code impl=hybrid}), and the long-only FST with an ordinal-indexed
+ * side store for byte payloads ({@code org.apache.lucene.util.fst5}, {@code impl=longs}; {@code
+ * outputs=pair} is not supported there). Run with {@code -prof gc}: the decisive numbers are {@code
+ * gc.alloc.rate.norm} and {@code ns/op}.
  */
 @BenchmarkMode(Mode.AverageTime)
 @OutputTimeUnit(TimeUnit.NANOSECONDS)
@@ -59,7 +61,7 @@ import org.openjdk.jmh.infra.Blackhole;
 @Fork(1)
 public class FSTOutputsBenchmark {
 
-  @Param({"old", "new", "holder", "hybrid"})
+  @Param({"old", "new", "holder", "hybrid", "longs"})
   public String impl;
 
   @Param({"none", "long", "bytes", "pair"})
@@ -82,7 +84,8 @@ public class FSTOutputsBenchmark {
     OLD,
     NEW,
     HOLDER,
-    HYBRID
+    HYBRID,
+    LONGS
   }
 
   FSTBenchmarkData data;
@@ -93,6 +96,8 @@ public class FSTOutputsBenchmark {
   org.apache.lucene.util.fst2.FST<Object> newFst;
   org.apache.lucene.util.fst3.FST<Object> holderFst;
   org.apache.lucene.util.fst4.FST<Object> hybridFst;
+  org.apache.lucene.util.fst5.FST longsFst; // outputs=none|long
+  org.apache.lucene.util.fst5.FSTMap longsMap; // outputs=bytes
 
   private Path tempDir;
   private Directory dir;
@@ -100,6 +105,8 @@ public class FSTOutputsBenchmark {
   private IndexInput newIn;
   private IndexInput holderIn;
   private IndexInput hybridIn;
+  private IndexInput longsIn;
+  private IndexInput longsMetaIn;
 
   private int cursor;
   private final long[] scratch = new long[64];
@@ -119,6 +126,11 @@ public class FSTOutputsBenchmark {
   private final org.apache.lucene.util.fst4.FST.Arc hybridArc =
       new org.apache.lucene.util.fst4.FST.Arc();
   private org.apache.lucene.util.fst4.OutputHolder<Object> hybridResult;
+  private org.apache.lucene.util.fst5.FST.BytesReader longsReader;
+  private final org.apache.lucene.util.fst5.FST.Arc longsArc =
+      new org.apache.lucene.util.fst5.FST.Arc();
+  private final org.apache.lucene.util.BytesRefBuilder longsValue =
+      new org.apache.lucene.util.BytesRefBuilder();
 
   @Setup(Level.Trial)
   public void setup() throws IOException {
@@ -183,6 +195,41 @@ public class FSTOutputsBenchmark {
       holderFst = fst;
       holderReader = fst.getBytesReader();
       holderResult = fst.outputs.newHolder();
+    } else if (which == Impl.LONGS) {
+      if (kind == Kind.PAIR) {
+        throw new IllegalArgumentException("impl=longs has no pair outputs");
+      }
+      if (kind == Kind.BYTES) {
+        org.apache.lucene.util.fst5.FSTMap map = buildLongsMap(data);
+        if (dir != null) {
+          try (IndexOutput meta = dir.createOutput("longs.meta", IOContext.DEFAULT);
+              IndexOutput out = dir.createOutput("longs", IOContext.DEFAULT)) {
+            buildLongsMapBuilder(data).save(meta, out);
+          }
+          longsMetaIn = dir.openInput("longs.meta", IOContext.DEFAULT);
+          longsIn = dir.openInput("longs", IOContext.DEFAULT);
+          map = org.apache.lucene.util.fst5.FSTMap.loadOffHeap(longsMetaIn, longsIn);
+        }
+        longsMap = map;
+        longsFst = map.fst();
+      } else {
+        org.apache.lucene.util.fst5.FST fst = buildLongs(kind, data);
+        if (dir != null) {
+          try (IndexOutput out = dir.createOutput("longs", IOContext.DEFAULT)) {
+            fst.save(out, out);
+          }
+          longsIn = dir.openInput("longs", IOContext.DEFAULT);
+          org.apache.lucene.util.fst5.FST.FSTMetadata meta =
+              org.apache.lucene.util.fst5.FST.readMetadata(longsIn);
+          fst =
+              org.apache.lucene.util.fst5.FST.fromFSTReader(
+                  meta,
+                  new org.apache.lucene.util.fst5.OffHeapFSTStore(
+                      longsIn, longsIn.getFilePointer(), meta));
+        }
+        longsFst = fst;
+      }
+      longsReader = longsFst.getBytesReader();
     } else {
       org.apache.lucene.util.fst4.FST<Object> fst = buildHybrid(kind, data);
       if (dir != null) {
@@ -206,7 +253,7 @@ public class FSTOutputsBenchmark {
 
   @TearDown(Level.Trial)
   public void tearDown() throws IOException {
-    IOUtils.close(oldIn, newIn, holderIn, hybridIn, dir);
+    IOUtils.close(oldIn, newIn, holderIn, hybridIn, longsIn, longsMetaIn, dir);
     if (tempDir != null) {
       IOUtils.rm(tempDir);
     }
@@ -233,6 +280,39 @@ public class FSTOutputsBenchmark {
 
   static long longValue4(org.apache.lucene.util.fst4.OutputHolder<?> holder) {
     return ((org.apache.lucene.util.fst4.PositiveIntOutputs.LongHolder) holder).value;
+  }
+
+  /** fst5: a single long per arc; outputs=none is all zeros, outputs=long the data's longs. */
+  static org.apache.lucene.util.fst5.FST buildLongs(Kind kind, FSTBenchmarkData data)
+      throws IOException {
+    org.apache.lucene.util.fst5.FSTCompiler compiler =
+        new org.apache.lucene.util.fst5.FSTCompiler.Builder(
+                org.apache.lucene.util.fst5.FST.INPUT_TYPE.BYTE1)
+            .build();
+    IntsRefBuilder scratch = new IntsRefBuilder();
+    for (int i = 0; i < data.terms.length; i++) {
+      long value =
+          kind == Kind.LONG ? data.longOutputs[i] : org.apache.lucene.util.fst5.FST.NO_OUTPUT;
+      compiler.add(org.apache.lucene.util.fst5.Util.toIntsRef(data.terms[i], scratch), value);
+    }
+    return org.apache.lucene.util.fst5.FST.fromFSTReader(
+        compiler.compile(), compiler.getFSTReader());
+  }
+
+  /** fst5: byte payloads go to the side store, the FST maps keys to ordinals. */
+  static org.apache.lucene.util.fst5.FSTMap.Builder buildLongsMapBuilder(FSTBenchmarkData data)
+      throws IOException {
+    org.apache.lucene.util.fst5.FSTMap.Builder builder =
+        new org.apache.lucene.util.fst5.FSTMap.Builder();
+    for (int i = 0; i < data.terms.length; i++) {
+      builder.add(data.terms[i], data.bytesOutputs[i]);
+    }
+    return builder;
+  }
+
+  static org.apache.lucene.util.fst5.FSTMap buildLongsMap(FSTBenchmarkData data)
+      throws IOException {
+    return buildLongsMapBuilder(data).build();
   }
 
   static org.apache.lucene.util.fst4.Outputs<Object> hybridOutputs(Kind kind) {
@@ -422,6 +502,14 @@ public class FSTOutputsBenchmark {
           bh.consume(org.apache.lucene.util.fst4.Util.get(hybridFst, key, hybridResult));
         }
       }
+      case LONGS -> {
+        switch (kind) {
+          case NONE -> bh.consume(org.apache.lucene.util.fst5.Util.contains(longsFst, key));
+          case LONG -> bh.consume(org.apache.lucene.util.fst5.Util.get(longsFst, key));
+          case BYTES -> bh.consume(longsMap.get(key, longsValue));
+          case PAIR -> throw new AssertionError();
+        }
+      }
     }
   }
 
@@ -452,6 +540,10 @@ public class FSTOutputsBenchmark {
     }
     if (which == Impl.HYBRID) {
       lookupHitWalkHybrid(key, bh);
+      return;
+    }
+    if (which == Impl.LONGS) {
+      lookupHitWalkLongs(key, bh);
       return;
     }
     if (which == Impl.OLD) {
@@ -513,6 +605,40 @@ public class FSTOutputsBenchmark {
           bh.consume(fst.fold(scratch, n, in));
         }
       }
+    }
+  }
+
+  private void lookupHitWalkLongs(BytesRef key, Blackhole bh) throws IOException {
+    org.apache.lucene.util.fst5.FST fst = longsFst;
+    org.apache.lucene.util.fst5.FST.BytesReader in = longsReader;
+    org.apache.lucene.util.fst5.FST.Arc arc = fst.getFirstArc(longsArc);
+    if (kind == Kind.NONE) {
+      for (int i = 0; i < key.length; i++) {
+        if (fst.findTargetArc(key.bytes[key.offset + i] & 0xFF, arc, arc, in) == null) {
+          bh.consume(false);
+          return;
+        }
+      }
+      bh.consume(arc.isFinal());
+      return;
+    }
+    long acc = 0;
+    for (int i = 0; i < key.length; i++) {
+      if (fst.findTargetArc(key.bytes[key.offset + i] & 0xFF, arc, arc, in) == null) {
+        bh.consume(false);
+        return;
+      }
+      acc += arc.output();
+    }
+    if (arc.isFinal()) {
+      acc += arc.nextFinalOutput();
+    }
+    if (kind == Kind.LONG) {
+      bh.consume(acc);
+    } else {
+      // outputs=bytes: the accumulated long is the ordinal; one random access into the store.
+      longsMap.store().get(acc, longsValue);
+      bh.consume(longsValue);
     }
   }
 
@@ -604,12 +730,32 @@ public class FSTOutputsBenchmark {
       case NEW -> org.apache.lucene.util.fst2.Util.contains(newFst, key);
       case HOLDER -> org.apache.lucene.util.fst3.Util.contains(holderFst, key);
       case HYBRID -> org.apache.lucene.util.fst4.Util.contains(hybridFst, key);
+      case LONGS -> org.apache.lucene.util.fst5.Util.contains(longsFst, key);
     };
   }
 
   /** Full enumeration of the FST, consuming every output. Reported per FST, not per term. */
   @Benchmark
   public void enumerateAll(Blackhole bh) throws IOException {
+    if (which == Impl.LONGS) {
+      if (kind == Kind.BYTES) {
+        org.apache.lucene.util.fst5.FSTMap.Entries e = longsMap.entries();
+        while (e.next()) {
+          e.value(longsValue);
+          bh.consume(longsValue);
+        }
+      } else {
+        org.apache.lucene.util.fst5.BytesRefFSTEnum e =
+            new org.apache.lucene.util.fst5.BytesRefFSTEnum(longsFst);
+        org.apache.lucene.util.fst5.BytesRefFSTEnum.InputOutput io;
+        while ((io = e.next()) != null) {
+          if (kind != Kind.NONE) {
+            bh.consume(io.output);
+          }
+        }
+      }
+      return;
+    }
     if (which == Impl.HYBRID) {
       org.apache.lucene.util.fst4.BytesRefFSTEnum<Object> e =
           new org.apache.lucene.util.fst4.BytesRefFSTEnum<>(hybridFst);
@@ -666,6 +812,10 @@ public class FSTOutputsBenchmark {
       case NEW -> buildNew(kind, data).numBytes();
       case HOLDER -> buildHolder(kind, data).numBytes();
       case HYBRID -> buildHybrid(kind, data).numBytes();
+      case LONGS ->
+          kind == Kind.BYTES
+              ? buildLongsMap(data).fst().numBytes()
+              : buildLongs(kind, data).numBytes();
     };
   }
 }

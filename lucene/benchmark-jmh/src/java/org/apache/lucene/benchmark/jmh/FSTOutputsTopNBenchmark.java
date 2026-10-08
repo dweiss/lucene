@@ -46,8 +46,9 @@ import org.openjdk.jmh.annotations.Warmup;
  * Top-N (shortest paths) completion of a two-letter prefix on a {@code PositiveIntOutputs} FST:
  * eager {@code Util.shortestPaths} ({@code impl=old}) versus primitive {@code
  * Util.shortestPathsLong} ({@code impl=new}) versus holder-based {@code Util.shortestPaths} with
- * {@code PositiveIntOutputs.HOLDER_COMPARATOR} ({@code impl=holder}). Long outputs only, hence a
- * separate class from {@link FSTOutputsBenchmark}.
+ * {@code PositiveIntOutputs.HOLDER_COMPARATOR} ({@code impl=holder}, {@code impl=hybrid}) versus
+ * the long-only {@code fst5} searcher ({@code impl=longs}). Long outputs only, hence a separate
+ * class from {@link FSTOutputsBenchmark}.
  */
 @BenchmarkMode(Mode.AverageTime)
 @OutputTimeUnit(TimeUnit.NANOSECONDS)
@@ -59,7 +60,7 @@ public class FSTOutputsTopNBenchmark {
 
   private static final int TOP_N = 10;
 
-  @Param({"old", "new", "holder", "hybrid"})
+  @Param({"old", "new", "holder", "hybrid", "longs"})
   public String impl;
 
   @Param({"onheap", "offheap"})
@@ -90,6 +91,10 @@ public class FSTOutputsTopNBenchmark {
   org.apache.lucene.util.fst4.FST.Arc hybridArc = new org.apache.lucene.util.fst4.FST.Arc();
   org.apache.lucene.util.fst4.PositiveIntOutputs.LongHolder hybridPrefix =
       org.apache.lucene.util.fst4.PositiveIntOutputs.getSingleton().newHolder();
+
+  org.apache.lucene.util.fst5.FST longsFst;
+  org.apache.lucene.util.fst5.FST.BytesReader longsReader;
+  org.apache.lucene.util.fst5.FST.Arc longsArc = new org.apache.lucene.util.fst5.FST.Arc();
 
   private Path tempDir;
   private Directory dir;
@@ -161,6 +166,23 @@ public class FSTOutputsTopNBenchmark {
       }
       holderFst = fst;
       holderReader = fst.getBytesReader();
+    } else if (which == FSTOutputsBenchmark.Impl.LONGS) {
+      org.apache.lucene.util.fst5.FST fst =
+          FSTOutputsBenchmark.buildLongs(FSTOutputsBenchmark.Kind.LONG, data);
+      if (dir != null) {
+        try (IndexOutput out = dir.createOutput("fst", IOContext.DEFAULT)) {
+          fst.save(out, out);
+        }
+        in = dir.openInput("fst", IOContext.DEFAULT);
+        org.apache.lucene.util.fst5.FST.FSTMetadata meta =
+            org.apache.lucene.util.fst5.FST.readMetadata(in);
+        fst =
+            org.apache.lucene.util.fst5.FST.fromFSTReader(
+                meta,
+                new org.apache.lucene.util.fst5.OffHeapFSTStore(in, in.getFilePointer(), meta));
+      }
+      longsFst = fst;
+      longsReader = fst.getBytesReader();
     } else {
       org.apache.lucene.util.fst4.FST<Long> fst =
           FSTOutputsBenchmark.cast(
@@ -195,6 +217,19 @@ public class FSTOutputsTopNBenchmark {
   @Benchmark
   public Object topN() throws IOException {
     BytesRef prefix = data.prefixes[cursor = (cursor + 1) & (data.prefixes.length - 1)];
+    if (which == FSTOutputsBenchmark.Impl.LONGS) {
+      org.apache.lucene.util.fst5.FST.Arc arc = longsFst.getFirstArc(longsArc);
+      long prefixOutput = 0;
+      for (int i = 0; i < prefix.length; i++) {
+        arc = longsFst.findTargetArc(prefix.bytes[prefix.offset + i] & 0xFF, arc, arc, longsReader);
+        if (arc == null) {
+          return null;
+        }
+        prefixOutput += arc.output();
+      }
+      return org.apache.lucene.util.fst5.Util.shortestPaths(
+          longsFst, arc, prefixOutput, TOP_N, true);
+    }
     if (which == FSTOutputsBenchmark.Impl.HYBRID) {
       org.apache.lucene.util.fst4.FST.Arc arc = hybridFst.getFirstArc(hybridArc);
       hybridPrefix.setNoOutput();
