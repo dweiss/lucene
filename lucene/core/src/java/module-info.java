@@ -46,6 +46,7 @@ module org.apache.lucene.core {
   exports org.apache.lucene.util.bkd;
   exports org.apache.lucene.util.compress;
   exports org.apache.lucene.util.fst;
+  exports org.apache.lucene.util.fst2;
   exports org.apache.lucene.util.graph;
   exports org.apache.lucene.util.hnsw;
   exports org.apache.lucene.util.mutable;
@@ -64,6 +65,8 @@ module org.apache.lucene.core {
   opens org.apache.lucene.document to
       org.apache.lucene.test_framework;
   opens org.apache.lucene.util.fst to
+      org.apache.lucene.test_framework;
+  opens org.apache.lucene.util.fst2 to
       org.apache.lucene.test_framework;
   opens org.apache.lucene.store to
       org.apache.lucene.test_framework;
