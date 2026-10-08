@@ -90,6 +90,11 @@ public final class NoOutputs extends Outputs<Object> {
   }
 
   @Override
+  public void skipOutput(DataInput in) {
+    // No bytes are written for this output.
+  }
+
+  @Override
   public Object getNoOutput() {
     return NO_OUTPUT;
   }

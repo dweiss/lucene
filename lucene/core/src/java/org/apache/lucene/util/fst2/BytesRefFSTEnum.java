@@ -27,13 +27,31 @@ import org.apache.lucene.util.BytesRef;
  */
 public final class BytesRefFSTEnum<T> extends FSTEnum<T> {
   private final BytesRef current = new BytesRef(10);
-  private final InputOutput<T> result = new InputOutput<>();
+  private final InputOutput<T> result = new InputOutput<>(this);
   private BytesRef target;
 
-  /** Holds a single input (BytesRef) + output pair. */
-  public static class InputOutput<T> {
+  /**
+   * Holds the current input (BytesRef) and gives access to the current output of the owning enum.
+   * Unlike the eager variant, the output is not stored here: it is decoded on request from the
+   * positions recorded during traversal.
+   */
+  public static final class InputOutput<T> {
     public BytesRef input;
-    public T output;
+    private final BytesRefFSTEnum<T> owner;
+
+    InputOutput(BytesRefFSTEnum<T> owner) {
+      this.owner = owner;
+    }
+
+    /** The current output, decoded on demand (see {@link BytesRefFSTEnum#currentOutput()}). */
+    public T output() throws IOException {
+      return owner.currentOutput();
+    }
+
+    /** The current output as a primitive long (see {@link BytesRefFSTEnum#currentOutputLong()}). */
+    public long outputLong() {
+      return owner.currentOutputLong();
+    }
   }
 
   /**
@@ -118,7 +136,6 @@ public final class BytesRefFSTEnum<T> extends FSTEnum<T> {
       return null;
     } else {
       current.length = upto - 1;
-      result.output = output[upto];
       return result;
     }
   }

@@ -27,13 +27,31 @@ import org.apache.lucene.util.IntsRef;
  */
 public final class IntsRefFSTEnum<T> extends FSTEnum<T> {
   private final IntsRef current = new IntsRef(10);
-  private final InputOutput<T> result = new InputOutput<>();
+  private final InputOutput<T> result = new InputOutput<>(this);
   private IntsRef target;
 
-  /** Holds a single input (IntsRef) + output pair. */
-  public static class InputOutput<T> {
+  /**
+   * Holds the current input (IntsRef) and gives access to the current output of the owning enum.
+   * Unlike the eager variant, the output is not stored here: it is decoded on request from the
+   * positions recorded during traversal.
+   */
+  public static final class InputOutput<T> {
     public IntsRef input;
-    public T output;
+    private final IntsRefFSTEnum<T> owner;
+
+    InputOutput(IntsRefFSTEnum<T> owner) {
+      this.owner = owner;
+    }
+
+    /** The current output, decoded on demand (see {@link IntsRefFSTEnum#currentOutput()}). */
+    public T output() throws IOException {
+      return owner.currentOutput();
+    }
+
+    /** The current output as a primitive long (see {@link IntsRefFSTEnum#currentOutputLong()}). */
+    public long outputLong() {
+      return owner.currentOutputLong();
+    }
   }
 
   /**
@@ -118,7 +136,6 @@ public final class IntsRefFSTEnum<T> extends FSTEnum<T> {
       return null;
     } else {
       current.length = upto - 1;
-      result.output = output[upto];
       return result;
     }
   }

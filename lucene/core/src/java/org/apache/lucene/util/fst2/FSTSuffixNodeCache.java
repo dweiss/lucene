@@ -70,7 +70,7 @@ final class FSTSuffixNodeCache<T> implements Accountable {
   private PagedGrowableHash fallbackTable;
 
   private final FSTCompiler<T> fstCompiler;
-  private final FST.Arc<T> scratchArc = new FST.Arc<>();
+  private final FST.Arc scratchArc = new FST.Arc();
   // store the last fallback table node length in getFallback()
   private int lastFallbackNodeLength;
   // store the last fallback table hashtable slot in getFallback()
@@ -408,8 +408,9 @@ final class FSTSuffixNodeCache<T> implements Accountable {
       while (true) {
         h = PRIME * h + scratchArc.label();
         h = PRIME * h + (int) (scratchArc.target() ^ (scratchArc.target() >> 32));
-        h = PRIME * h + scratchArc.output().hashCode();
-        h = PRIME * h + scratchArc.nextFinalOutput().hashCode();
+        // TODO (Design 2): hash the encoded bytes directly instead of decoding (and boxing) here.
+        h = PRIME * h + fstCompiler.fst.output(scratchArc, in).hashCode();
+        h = PRIME * h + fstCompiler.fst.nextFinalOutput(scratchArc, in).hashCode();
         if (scratchArc.isFinal()) {
           h += 17;
         }
@@ -469,9 +470,9 @@ final class FSTSuffixNodeCache<T> implements Accountable {
       for (int arcUpto = 0; arcUpto < node.numArcs; arcUpto++) {
         final FSTCompiler.Arc<T> arc = node.arcs[arcUpto];
         if (arc.label != scratchArc.label()
-            || arc.output.equals(scratchArc.output()) == false
+            || arc.output.equals(fstCompiler.fst.output(scratchArc, in)) == false
             || ((FSTCompiler.CompiledNode) arc.target).node != scratchArc.target()
-            || arc.nextFinalOutput.equals(scratchArc.nextFinalOutput()) == false
+            || arc.nextFinalOutput.equals(fstCompiler.fst.nextFinalOutput(scratchArc, in)) == false
             || arc.isFinal != scratchArc.isFinal()) {
           return -1;
         }

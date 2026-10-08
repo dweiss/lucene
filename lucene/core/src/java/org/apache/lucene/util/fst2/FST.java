@@ -57,7 +57,12 @@ import org.apache.lucene.util.RamUsageEstimator;
  * <p>The format is similar to what's used by Morfologik
  * (https://github.com/morfologik/morfologik-stemming).
  *
- * <p>See the {@link org.apache.lucene.util.fst package documentation} for some simple examples.
+ * <p>See the {@link org.apache.lucene.util.fst2 package documentation} for some simple examples.
+ *
+ * <p>Unlike {@link org.apache.lucene.util.fst.FST}, this experimental variant never decodes arc
+ * outputs while traversing: {@link Arc} only records the byte position of each output and the value
+ * is produced on demand through {@link #readOutput}, {@link #fold} or their primitive {@code long}
+ * twins (see {@link LongOutputs}).
  *
  * @lucene.experimental
  */
@@ -138,25 +143,52 @@ public final class FST<T> implements Accountable {
   /** If arc has this label then that arc is final/accepted */
   public static final int END_LABEL = -1;
 
+  /**
+   * Output position meaning: the arc carries no output (the output is {@link Outputs#getNoOutput}).
+   */
+  public static final long NO_OUTPUT_POS = -1;
+
+  /**
+   * Output position meaning: the FST's empty-string output. It lives in the metadata, not in the
+   * byte array, and is only ever carried by the virtual arcs produced by {@link #getFirstArc}.
+   */
+  public static final long EMPTY_OUTPUT_POS = -2;
+
+  /**
+   * Bit set on an output position when the bytes at that position were written with {@link
+   * Outputs#writeFinalOutput} and must therefore be decoded with {@link Outputs#readFinalOutput}.
+   */
+  static final long FINAL_ENCODED_FLAG = 1L << 62;
+
+  static final long POS_MASK = FINAL_ENCODED_FLAG - 1;
+
   /** The reader of the FST, used to read bytes from the underlying FST storage */
   private final FSTReader fstReader;
 
   public final Outputs<T> outputs;
 
-  /** Represents a single arc. */
-  public static final class Arc<T> {
+  /** Non-null iff {@link #outputs} implements {@link LongOutputs}. */
+  private final LongOutputs longOutputs;
+
+  /**
+   * Represents a single arc. The arc does not hold decoded output values, only the positions of the
+   * encoded outputs in the FST bytes; see {@link #outputPos()} and {@link #nextFinalOutputPos()}.
+   */
+  public static final class Arc {
 
     // *** Arc fields.
 
     private int label;
 
-    private T output;
+    /** Position of this arc's output, or {@link #NO_OUTPUT_POS} / {@link #EMPTY_OUTPUT_POS}. */
+    private long outputPos;
 
     private long target;
 
     private byte flags;
 
-    private T nextFinalOutput;
+    /** Position of the target node's final output, or {@link #NO_OUTPUT_POS}. */
+    private long nextFinalOutputPos;
 
     private long nextArc;
 
@@ -195,12 +227,12 @@ public final class FST<T> implements Accountable {
     private int presenceIndex;
 
     /** Returns this */
-    public Arc<T> copyFrom(Arc<T> other) {
+    public Arc copyFrom(Arc other) {
       label = other.label();
       target = other.target();
       flags = other.flags();
-      output = other.output();
-      nextFinalOutput = other.nextFinalOutput();
+      outputPos = other.outputPos();
+      nextFinalOutputPos = other.nextFinalOutputPos();
       nextArc = other.nextArc();
       nodeFlags = other.nodeFlags();
       bytesPerArc = other.bytesPerArc();
@@ -251,10 +283,10 @@ public final class FST<T> implements Accountable {
         b.append(" stop");
       }
       if (flag(BIT_ARC_HAS_OUTPUT)) {
-        b.append(" output=").append(output());
+        b.append(" outputPos=0x").append(Long.toHexString(outputPos()));
       }
       if (flag(BIT_ARC_HAS_FINAL_OUTPUT)) {
-        b.append(" nextFinalOutput=").append(nextFinalOutput());
+        b.append(" nextFinalOutputPos=0x").append(Long.toHexString(nextFinalOutputPos()));
       }
       if (bytesPerArc() != 0) {
         b.append(" arcArray(idx=")
@@ -276,8 +308,18 @@ public final class FST<T> implements Accountable {
       return label;
     }
 
-    public T output() {
-      return output;
+    /**
+     * Position of this arc's output in the FST bytes, {@link #NO_OUTPUT_POS} if the arc has no
+     * output, or {@link #EMPTY_OUTPUT_POS} for the empty-string output. Decode it with {@link
+     * FST#readOutput} or {@link FST#readOutputLong}.
+     */
+    public long outputPos() {
+      return outputPos;
+    }
+
+    /** True iff this arc carries an output other than {@link Outputs#getNoOutput}. */
+    public boolean hasOutput() {
+      return outputPos != NO_OUTPUT_POS;
     }
 
     /** Ord/address to target node. */
@@ -289,8 +331,17 @@ public final class FST<T> implements Accountable {
       return flags;
     }
 
-    public T nextFinalOutput() {
-      return nextFinalOutput;
+    /**
+     * Position of the final output of this arc's target node, or {@link #NO_OUTPUT_POS}. Decode it
+     * with {@link FST#readOutput} or {@link FST#readOutputLong}.
+     */
+    public long nextFinalOutputPos() {
+      return nextFinalOutputPos;
+    }
+
+    /** True iff the target node has a final output other than {@link Outputs#getNoOutput}. */
+    public boolean hasNextFinalOutput() {
+      return nextFinalOutputPos != NO_OUTPUT_POS;
     }
 
     /**
@@ -354,7 +405,7 @@ public final class FST<T> implements Accountable {
     static class BitTable {
 
       /** See {@link BitTableUtil#isBitSet(int, FST.BytesReader)}. */
-      static boolean isBitSet(int bitIndex, Arc<?> arc, FST.BytesReader in) throws IOException {
+      static boolean isBitSet(int bitIndex, Arc arc, FST.BytesReader in) throws IOException {
         assert arc.nodeFlags() == ARCS_FOR_DIRECT_ADDRESSING;
         in.setPosition(arc.bitTableStart);
         return BitTableUtil.isBitSet(bitIndex, in);
@@ -364,35 +415,35 @@ public final class FST<T> implements Accountable {
        * See {@link BitTableUtil#countBits(int, FST.BytesReader)}. The count of bit set is the
        * number of arcs of a direct addressing node.
        */
-      static int countBits(Arc<?> arc, FST.BytesReader in) throws IOException {
+      static int countBits(Arc arc, FST.BytesReader in) throws IOException {
         assert arc.nodeFlags() == ARCS_FOR_DIRECT_ADDRESSING;
         in.setPosition(arc.bitTableStart);
         return BitTableUtil.countBits(getNumPresenceBytes(arc.numArcs()), in);
       }
 
       /** See {@link BitTableUtil#countBitsUpTo(int, FST.BytesReader)}. */
-      static int countBitsUpTo(int bitIndex, Arc<?> arc, FST.BytesReader in) throws IOException {
+      static int countBitsUpTo(int bitIndex, Arc arc, FST.BytesReader in) throws IOException {
         assert arc.nodeFlags() == ARCS_FOR_DIRECT_ADDRESSING;
         in.setPosition(arc.bitTableStart);
         return BitTableUtil.countBitsUpTo(bitIndex, in);
       }
 
       /** See {@link BitTableUtil#nextBitSet(int, int, FST.BytesReader)}. */
-      static int nextBitSet(int bitIndex, Arc<?> arc, FST.BytesReader in) throws IOException {
+      static int nextBitSet(int bitIndex, Arc arc, FST.BytesReader in) throws IOException {
         assert arc.nodeFlags() == ARCS_FOR_DIRECT_ADDRESSING;
         in.setPosition(arc.bitTableStart);
         return BitTableUtil.nextBitSet(bitIndex, getNumPresenceBytes(arc.numArcs()), in);
       }
 
       /** See {@link BitTableUtil#previousBitSet(int, FST.BytesReader)}. */
-      static int previousBitSet(int bitIndex, Arc<?> arc, FST.BytesReader in) throws IOException {
+      static int previousBitSet(int bitIndex, Arc arc, FST.BytesReader in) throws IOException {
         assert arc.nodeFlags() == ARCS_FOR_DIRECT_ADDRESSING;
         in.setPosition(arc.bitTableStart);
         return BitTableUtil.previousBitSet(bitIndex, in);
       }
 
       /** Asserts the bit-table of the provided {@link Arc} is valid. */
-      static boolean assertIsValid(Arc<?> arc, FST.BytesReader in) throws IOException {
+      static boolean assertIsValid(Arc arc, FST.BytesReader in) throws IOException {
         assert arc.bytesPerArc() > 0;
         assert arc.nodeFlags() == ARCS_FOR_DIRECT_ADDRESSING;
         // First bit must be set.
@@ -425,7 +476,109 @@ public final class FST<T> implements Accountable {
     assert fstReader != null;
     this.metadata = Objects.requireNonNull(metadata, "FSTMetadata cannot be null");
     this.outputs = metadata.outputs;
+    this.longOutputs = outputs instanceof LongOutputs lo ? lo : null;
     this.fstReader = fstReader;
+  }
+
+  /** True iff {@link #outputs} implements {@link LongOutputs} and the primitive API can be used. */
+  public boolean hasLongOutputs() {
+    return longOutputs != null;
+  }
+
+  private LongOutputs longOutputs() {
+    if (longOutputs == null) {
+      throw new IllegalStateException(
+          outputs + " does not implement " + LongOutputs.class.getName());
+    }
+    return longOutputs;
+  }
+
+  /**
+   * Decodes the output encoded at the given position (as recorded in {@link Arc#outputPos()} or
+   * {@link Arc#nextFinalOutputPos()}). The reader's position is saved and restored, so this is safe
+   * to call in the middle of an arc traversal that uses the same reader.
+   */
+  public T readOutput(long pos, BytesReader in) throws IOException {
+    if (pos == NO_OUTPUT_POS) {
+      return outputs.getNoOutput();
+    } else if (pos == EMPTY_OUTPUT_POS) {
+      return metadata.emptyOutput;
+    }
+    final long saved = in.getPosition();
+    in.setPosition(pos & POS_MASK);
+    final T v = (pos & FINAL_ENCODED_FLAG) != 0 ? outputs.readFinalOutput(in) : outputs.read(in);
+    in.setPosition(saved);
+    return v;
+  }
+
+  /**
+   * Primitive twin of {@link #readOutput}; requires {@link #hasLongOutputs()}.
+   *
+   * @throws IllegalStateException if the outputs do not implement {@link LongOutputs}
+   */
+  public long readOutputLong(long pos, BytesReader in) throws IOException {
+    final LongOutputs lo = longOutputs();
+    if (pos == NO_OUTPUT_POS) {
+      return lo.noOutputLong();
+    } else if (pos == EMPTY_OUTPUT_POS) {
+      return lo.toLong(metadata.emptyOutput);
+    }
+    final long saved = in.getPosition();
+    in.setPosition(pos & POS_MASK);
+    final long v = (pos & FINAL_ENCODED_FLAG) != 0 ? lo.readFinalOutputLong(in) : lo.readLong(in);
+    in.setPosition(saved);
+    return v;
+  }
+
+  /** Decodes {@code arc}'s output: {@code readOutput(arc.outputPos(), in)}. */
+  public T output(Arc arc, BytesReader in) throws IOException {
+    return readOutput(arc.outputPos, in);
+  }
+
+  /**
+   * Decodes the final output of {@code arc}'s target: {@code readOutput(arc.nextFinalOutputPos(),
+   * in)}.
+   */
+  public T nextFinalOutput(Arc arc, BytesReader in) throws IOException {
+    return readOutput(arc.nextFinalOutputPos, in);
+  }
+
+  /** Primitive twin of {@link #output(Arc, BytesReader)}. */
+  public long outputLong(Arc arc, BytesReader in) throws IOException {
+    return readOutputLong(arc.outputPos, in);
+  }
+
+  /** Primitive twin of {@link #nextFinalOutput(Arc, BytesReader)}. */
+  public long nextFinalOutputLong(Arc arc, BytesReader in) throws IOException {
+    return readOutputLong(arc.nextFinalOutputPos, in);
+  }
+
+  /**
+   * Folds the outputs at {@code positions[0..n)} left to right with {@link Outputs#add}, skipping
+   * {@link #NO_OUTPUT_POS} entries. Allocates at most what {@link Outputs#add} allocates.
+   */
+  public T fold(long[] positions, int n, BytesReader in) throws IOException {
+    T acc = outputs.getNoOutput();
+    for (int i = 0; i < n; i++) {
+      final long pos = positions[i];
+      if (pos != NO_OUTPUT_POS) {
+        acc = outputs.add(acc, readOutput(pos, in));
+      }
+    }
+    return acc;
+  }
+
+  /** Primitive twin of {@link #fold}; requires {@link #hasLongOutputs()}. Does not allocate. */
+  public long foldLong(long[] positions, int n, BytesReader in) throws IOException {
+    final LongOutputs lo = longOutputs();
+    long acc = lo.noOutputLong();
+    for (int i = 0; i < n; i++) {
+      final long pos = positions[i];
+      if (pos != NO_OUTPUT_POS) {
+        acc = lo.addLong(acc, readOutputLong(pos, in));
+      }
+    }
+    return acc;
   }
 
   /**
@@ -562,7 +715,7 @@ public final class FST<T> implements Accountable {
   }
 
   /** returns true if the node at this address has any outgoing arcs */
-  public static <T> boolean targetHasArcs(Arc<T> arc) {
+  public static boolean targetHasArcs(Arc arc) {
     return arc.target() > 0;
   }
 
@@ -579,7 +732,7 @@ public final class FST<T> implements Accountable {
    * Reads the presence bits of a direct-addressing node. Actually we don't read them here, we just
    * keep the pointer to the bit-table start and we skip them.
    */
-  private void readPresenceBytes(Arc<T> arc, BytesReader in) throws IOException {
+  private void readPresenceBytes(Arc arc, BytesReader in) throws IOException {
     assert arc.bytesPerArc() > 0;
     assert arc.nodeFlags() == ARCS_FOR_DIRECT_ADDRESSING;
     arc.bitTableStart = in.getPosition();
@@ -587,20 +740,22 @@ public final class FST<T> implements Accountable {
   }
 
   /** Fills virtual 'start' arc, ie, an empty incoming arc to the FST's start node */
-  public Arc<T> getFirstArc(Arc<T> arc) {
+  public Arc getFirstArc(Arc arc) {
     T NO_OUTPUT = outputs.getNoOutput();
 
     if (metadata.emptyOutput != null) {
       arc.flags = BIT_FINAL_ARC | BIT_LAST_ARC;
-      arc.nextFinalOutput = metadata.emptyOutput;
       if (metadata.emptyOutput != NO_OUTPUT) {
         arc.flags = (byte) (arc.flags() | BIT_ARC_HAS_FINAL_OUTPUT);
+        arc.nextFinalOutputPos = EMPTY_OUTPUT_POS;
+      } else {
+        arc.nextFinalOutputPos = NO_OUTPUT_POS;
       }
     } else {
       arc.flags = BIT_LAST_ARC;
-      arc.nextFinalOutput = NO_OUTPUT;
+      arc.nextFinalOutputPos = NO_OUTPUT_POS;
     }
-    arc.output = NO_OUTPUT;
+    arc.outputPos = NO_OUTPUT_POS;
 
     // If there are no nodes, ie, the FST only accepts the
     // empty string, then startNode is 0
@@ -614,14 +769,14 @@ public final class FST<T> implements Accountable {
    *
    * @return Returns the second argument (<code>arc</code>).
    */
-  Arc<T> readLastTargetArc(Arc<T> follow, Arc<T> arc, BytesReader in) throws IOException {
+  Arc readLastTargetArc(Arc follow, Arc arc, BytesReader in) throws IOException {
     // System.out.println("readLast");
     if (!targetHasArcs(follow)) {
       // System.out.println("  end node");
       assert follow.isFinal();
       arc.label = END_LABEL;
       arc.target = FINAL_END_NODE;
-      arc.output = follow.nextFinalOutput();
+      arc.outputPos = follow.nextFinalOutputPos();
       arc.flags = BIT_LAST_ARC;
       arc.nodeFlags = arc.flags;
     } else {
@@ -690,14 +845,14 @@ public final class FST<T> implements Accountable {
    *
    * @return Returns the second argument (<code>arc</code>).
    */
-  public Arc<T> readFirstTargetArc(Arc<T> follow, Arc<T> arc, BytesReader in) throws IOException {
+  public Arc readFirstTargetArc(Arc follow, Arc arc, BytesReader in) throws IOException {
     // int pos = address;
     // System.out.println("    readFirstTarget follow.target=" + follow.target + " isFinal=" +
     // follow.isFinal());
     if (follow.isFinal()) {
       // Insert "fake" final first arc:
       arc.label = END_LABEL;
-      arc.output = follow.nextFinalOutput();
+      arc.outputPos = follow.nextFinalOutputPos();
       arc.flags = BIT_FINAL_ARC;
       if (follow.target() <= 0) {
         arc.flags |= BIT_LAST_ARC;
@@ -715,7 +870,7 @@ public final class FST<T> implements Accountable {
     }
   }
 
-  private void readFirstArcInfo(long nodeAddress, Arc<T> arc, final BytesReader in)
+  private void readFirstArcInfo(long nodeAddress, Arc arc, final BytesReader in)
       throws IOException {
     in.setPosition(nodeAddress);
 
@@ -741,7 +896,7 @@ public final class FST<T> implements Accountable {
     }
   }
 
-  public Arc<T> readFirstRealTargetArc(long nodeAddress, Arc<T> arc, final BytesReader in)
+  public Arc readFirstRealTargetArc(long nodeAddress, Arc arc, final BytesReader in)
       throws IOException {
     readFirstArcInfo(nodeAddress, arc, in);
     return readNextRealArc(arc, in);
@@ -751,7 +906,7 @@ public final class FST<T> implements Accountable {
    * Returns whether <code>arc</code>'s target points to a node in expanded format (fixed length
    * arcs).
    */
-  boolean isExpandedTarget(Arc<T> follow, BytesReader in) throws IOException {
+  boolean isExpandedTarget(Arc follow, BytesReader in) throws IOException {
     if (!targetHasArcs(follow)) {
       return false;
     } else {
@@ -764,7 +919,7 @@ public final class FST<T> implements Accountable {
   }
 
   /** In-place read; returns the arc. */
-  public Arc<T> readNextArc(Arc<T> arc, BytesReader in) throws IOException {
+  public Arc readNextArc(Arc arc, BytesReader in) throws IOException {
     if (arc.label() == END_LABEL) {
       // This was a fake inserted "final" arc
       if (arc.nextArc() <= 0) {
@@ -777,7 +932,7 @@ public final class FST<T> implements Accountable {
   }
 
   /** Peeks at next arc's label; does not alter arc. Do not call this if arc.isLast()! */
-  int readNextArcLabel(Arc<T> arc, BytesReader in) throws IOException {
+  int readNextArcLabel(Arc arc, BytesReader in) throws IOException {
     assert !arc.isLast();
 
     if (arc.label() == END_LABEL) {
@@ -829,7 +984,7 @@ public final class FST<T> implements Accountable {
     return readLabel(in);
   }
 
-  public Arc<T> readArcByIndex(Arc<T> arc, final BytesReader in, int idx) throws IOException {
+  public Arc readArcByIndex(Arc arc, final BytesReader in, int idx) throws IOException {
     assert arc.bytesPerArc() > 0;
     assert arc.nodeFlags() == ARCS_FOR_BINARY_SEARCH;
     assert idx >= 0 && idx < arc.numArcs();
@@ -844,8 +999,7 @@ public final class FST<T> implements Accountable {
    *
    * @param rangeIndex The index of the arc in the label range. It must be within the label range.
    */
-  public Arc<T> readArcByContinuous(Arc<T> arc, final BytesReader in, int rangeIndex)
-      throws IOException {
+  public Arc readArcByContinuous(Arc arc, final BytesReader in, int rangeIndex) throws IOException {
     assert rangeIndex >= 0 && rangeIndex < arc.numArcs();
     in.setPosition(arc.posArcsStart() - rangeIndex * (long) arc.bytesPerArc());
     arc.arcIdx = rangeIndex;
@@ -859,7 +1013,7 @@ public final class FST<T> implements Accountable {
    * @param rangeIndex The index of the arc in the label range. It must be present. The real arc
    *     offset is computed based on the presence bits of the direct addressing node.
    */
-  public Arc<T> readArcByDirectAddressing(Arc<T> arc, final BytesReader in, int rangeIndex)
+  public Arc readArcByDirectAddressing(Arc arc, final BytesReader in, int rangeIndex)
       throws IOException {
     assert BitTable.assertIsValid(arc, in);
     assert rangeIndex >= 0 && rangeIndex < arc.numArcs();
@@ -872,8 +1026,8 @@ public final class FST<T> implements Accountable {
    * Reads a present direct addressing node arc, with the provided index in the label range and its
    * corresponding presence index (which is the count of presence bits before it).
    */
-  private Arc<T> readArcByDirectAddressing(
-      Arc<T> arc, final BytesReader in, int rangeIndex, int presenceIndex) throws IOException {
+  private Arc readArcByDirectAddressing(
+      Arc arc, final BytesReader in, int rangeIndex, int presenceIndex) throws IOException {
     in.setPosition(arc.posArcsStart() - presenceIndex * (long) arc.bytesPerArc());
     arc.arcIdx = rangeIndex;
     arc.presenceIndex = presenceIndex;
@@ -886,19 +1040,19 @@ public final class FST<T> implements Accountable {
    * #readArcByDirectAddressing(Arc, BytesReader, int)} with {@code rangeIndex} equal to {@code
    * arc.numArcs() - 1}, but it is faster.
    */
-  public Arc<T> readLastArcByDirectAddressing(Arc<T> arc, final BytesReader in) throws IOException {
+  public Arc readLastArcByDirectAddressing(Arc arc, final BytesReader in) throws IOException {
     assert BitTable.assertIsValid(arc, in);
     int presenceIndex = BitTable.countBits(arc, in) - 1;
     return readArcByDirectAddressing(arc, in, arc.numArcs() - 1, presenceIndex);
   }
 
   /** Reads the last arc of a continuous node. */
-  public Arc<T> readLastArcByContinuous(Arc<T> arc, final BytesReader in) throws IOException {
+  public Arc readLastArcByContinuous(Arc arc, final BytesReader in) throws IOException {
     return readArcByContinuous(arc, in, arc.numArcs() - 1);
   }
 
   /** Never returns null, but you should never call this if arc.isLast() is true. */
-  public Arc<T> readNextRealArc(Arc<T> arc, final BytesReader in) throws IOException {
+  public Arc readNextRealArc(Arc arc, final BytesReader in) throws IOException {
 
     // TODO: can't assert this because we call from readFirstArc
     // assert !flag(arc.flags, BIT_LAST_ARC);
@@ -933,7 +1087,7 @@ public final class FST<T> implements Accountable {
    * Precondition: The arc flags byte has already been read and set; the given BytesReader is
    * positioned just after the arc flags byte.
    */
-  private Arc<T> readArc(Arc<T> arc, BytesReader in) throws IOException {
+  private Arc readArc(Arc arc, BytesReader in) throws IOException {
     if (arc.nodeFlags() == ARCS_FOR_DIRECT_ADDRESSING || arc.nodeFlags() == ARCS_FOR_CONTINUOUS) {
       arc.label = arc.firstLabel() + arc.arcIdx();
     } else {
@@ -941,15 +1095,17 @@ public final class FST<T> implements Accountable {
     }
 
     if (arc.flag(BIT_ARC_HAS_OUTPUT)) {
-      arc.output = outputs.read(in);
+      arc.outputPos = in.getPosition();
+      outputs.skipOutput(in);
     } else {
-      arc.output = outputs.getNoOutput();
+      arc.outputPos = NO_OUTPUT_POS;
     }
 
     if (arc.flag(BIT_ARC_HAS_FINAL_OUTPUT)) {
-      arc.nextFinalOutput = outputs.readFinalOutput(in);
+      arc.nextFinalOutputPos = in.getPosition() | FINAL_ENCODED_FLAG;
+      outputs.skipFinalOutput(in);
     } else {
-      arc.nextFinalOutput = outputs.getNoOutput();
+      arc.nextFinalOutputPos = NO_OUTPUT_POS;
     }
 
     if (arc.flag(BIT_STOP_NODE)) {
@@ -983,7 +1139,7 @@ public final class FST<T> implements Accountable {
     return arc;
   }
 
-  static <T> Arc<T> readEndArc(Arc<T> follow, Arc<T> arc) {
+  static Arc readEndArc(Arc follow, Arc arc) {
     if (follow.isFinal()) {
       if (follow.target() <= 0) {
         arc.flags = FST.BIT_LAST_ARC;
@@ -992,7 +1148,7 @@ public final class FST<T> implements Accountable {
         // NOTE: nextArc is a node (not an address!) in this case:
         arc.nextArc = follow.target();
       }
-      arc.output = follow.nextFinalOutput();
+      arc.outputPos = follow.nextFinalOutputPos();
       arc.label = FST.END_LABEL;
       return arc;
     } else {
@@ -1007,7 +1163,7 @@ public final class FST<T> implements Accountable {
    * Finds an arc leaving the incoming arc, replacing the arc in place. This returns null if the arc
    * was not found, else the incoming arc.
    */
-  public Arc<T> findTargetArc(int labelToMatch, Arc<T> follow, Arc<T> arc, BytesReader in)
+  public Arc findTargetArc(int labelToMatch, Arc follow, Arc arc, BytesReader in)
       throws IOException {
 
     if (labelToMatch == END_LABEL) {
@@ -1019,7 +1175,7 @@ public final class FST<T> implements Accountable {
           // NOTE: nextArc is a node (not an address!) in this case:
           arc.nextArc = follow.target();
         }
-        arc.output = follow.nextFinalOutput();
+        arc.outputPos = follow.nextFinalOutputPos();
         arc.label = END_LABEL;
         arc.nodeFlags = arc.flags;
         return arc;

@@ -26,7 +26,7 @@ import org.apache.lucene.util.RamUsageEstimator;
  *
  * @lucene.experimental
  */
-public final class PositiveIntOutputs extends Outputs<Long> {
+public final class PositiveIntOutputs extends Outputs<Long> implements LongOutputs {
 
   private static final Long NO_OUTPUT = 0L;
 
@@ -93,6 +93,31 @@ public final class PositiveIntOutputs extends Outputs<Long> {
     } else {
       return v;
     }
+  }
+
+  @Override
+  public void skipOutput(DataInput in) throws IOException {
+    in.readVLong();
+  }
+
+  @Override
+  public long noOutputLong() {
+    return 0;
+  }
+
+  @Override
+  public long readLong(DataInput in) throws IOException {
+    return in.readVLong();
+  }
+
+  @Override
+  public long addLong(long prefix, long output) {
+    return prefix + output;
+  }
+
+  @Override
+  public long toLong(Object boxed) {
+    return (Long) boxed;
   }
 
   private boolean valid(Long o) {

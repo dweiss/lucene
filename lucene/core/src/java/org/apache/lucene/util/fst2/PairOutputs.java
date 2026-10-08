@@ -160,6 +160,11 @@ public class PairOutputs<A, B> extends Outputs<PairOutputs.Pair<A, B>> {
     outputs2.skipOutput(in);
   }
 
+  // NOTE: writeFinalOutput/readFinalOutput are deliberately not overridden here: the inherited
+  // defaults delegate to write/read, so the final output of a pair is encoded with the components'
+  // plain write(). Overriding skipFinalOutput to call the components' skipFinalOutput would
+  // therefore be wrong; the inherited skipFinalOutput -> skipOutput is the correct mirror.
+
   @Override
   public Pair<A, B> getNoOutput() {
     return NO_OUTPUT;

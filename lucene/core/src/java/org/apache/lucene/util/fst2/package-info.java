@@ -16,21 +16,34 @@
  */
 
 /**
- * Finite state transducers
+ * Experimental finite state transducers with lazy, position-based outputs.
  *
- * <p>This package implements <a href="http://en.wikipedia.org/wiki/Finite_state_transducer">Finite
- * State Transducers</a> with the following characteristics:
+ * <p>This package is a copy of {@link org.apache.lucene.util.fst} with one change to the traversal
+ * API: {@link org.apache.lucene.util.fst2.FST.Arc} is not generic and does not hold decoded output
+ * values. Instead it records the byte position of the arc's output ({@link
+ * org.apache.lucene.util.fst2.FST.Arc#outputPos()}) and of the target node's final output ({@link
+ * org.apache.lucene.util.fst2.FST.Arc#nextFinalOutputPos()}) inside the FST bytes. Traversal is
+ * therefore allocation free and output-type agnostic; a value is produced only when the caller asks
+ * for it, either boxed ({@link org.apache.lucene.util.fst2.FST#readOutput}, {@link
+ * org.apache.lucene.util.fst2.FST#fold}) or as a primitive {@code long} ({@link
+ * org.apache.lucene.util.fst2.FST#readOutputLong}, {@link
+ * org.apache.lucene.util.fst2.FST#foldLong}) when the {@link org.apache.lucene.util.fst2.Outputs}
+ * implementation also implements {@link org.apache.lucene.util.fst2.LongOutputs}.
  *
- * <ul>
- *   <li>Fast and low memory overhead construction of the minimal FST (but inputs must be provided
- *       in sorted order)
- *   <li>Low object overhead and quick deserialization (byte[] representation)
- *   <li>Pluggable {@link org.apache.lucene.util.fst2.Outputs Outputs} representation
- *   <li>{@link org.apache.lucene.util.fst2.Util#shortestPaths N-shortest-paths} search by weight
- *   <li>Enumerators ({@link org.apache.lucene.util.fst2.IntsRefFSTEnum IntsRef} and {@link
- *       org.apache.lucene.util.fst2.BytesRefFSTEnum BytesRef}) that behave like {@link
- *       java.util.SortedMap SortedMap} iterators
- * </ul>
+ * <p>The enumerators expose the current output through {@link
+ * org.apache.lucene.util.fst2.BytesRefFSTEnum#currentOutput()} and {@link
+ * org.apache.lucene.util.fst2.BytesRefFSTEnum#currentOutputLong()}; {@link
+ * org.apache.lucene.util.fst2.Util} gains {@link org.apache.lucene.util.fst2.Util#getLong}, {@link
+ * org.apache.lucene.util.fst2.Util#contains} and {@link
+ * org.apache.lucene.util.fst2.Util#shortestPathsLong}.
+ *
+ * <p>Construction ({@link org.apache.lucene.util.fst2.FSTCompiler}) is deliberately unchanged and
+ * still works on boxed values; the serialized format is identical to that of {@link
+ * org.apache.lucene.util.fst.FST}, so FSTs can be exchanged between the two packages.
+ *
+ * <p>TODO (Design 2): define the outputs algebra over encodings (byte slices) rather than decoded
+ * values, so that construction and {@link org.apache.lucene.util.fst2.FSTSuffixNodeCache} stop
+ * boxing as well.
  *
  * <p>FST Construction example:
  *
@@ -52,47 +65,34 @@
  *     FST&lt;Long&gt; fst = FST.fromFSTReader(fstCompiler.compile(), fstCompiler.getFSTReader());
  * </code></pre>
  *
- * Retrieval by key:
+ * Retrieval by key, boxed or primitive:
  *
  * <pre><code class="language-java">
  *     Long value = Util.get(fst, new BytesRef("dog"));
  *     System.out.println(value); // 7
- * </code></pre>
- *
- * Retrieval by value:
- *
- * <pre><code class="language-java">
- *     // Only works because outputs are also in sorted order
- *     IntsRef key = Util.getByOutput(fst, 12);
- *     System.out.println(Util.toBytesRef(key, scratchBytes).utf8ToString()); // dogs
+ *     long v = Util.getLong(fst, new BytesRef("dog"), -1);
+ *     System.out.println(v); // 7
  * </code></pre>
  *
  * Iterate over key-value pairs in sorted order:
  *
  * <pre><code class="language-java">
- *     // Like TermsEnum, this also supports seeking (advance)
  *     BytesRefFSTEnum&lt;Long&gt; iterator = new BytesRefFSTEnum&lt;Long&gt;(fst);
  *     while (iterator.next() != null) {
- *       InputOutput&lt;Long&gt; mapEntry = iterator.current();
- *       System.out.println(mapEntry.input.utf8ToString());
- *       System.out.println(mapEntry.output);
+ *       System.out.println(iterator.current().input.utf8ToString());
+ *       System.out.println(iterator.currentOutputLong());
  *     }
  * </code></pre>
  *
  * N-shortest paths by weight:
  *
  * <pre><code class="language-java">
- *     Comparator&lt;Long&gt; comparator = new Comparator&lt;Long&gt;() {
- *       public int compare(Long left, Long right) {
- *         return left.compareTo(right);
- *       }
- *     };
- *     Arc&lt;Long&gt; firstArc = fst.getFirstArc(new Arc&lt;Long&gt;());
- *     Util.TopResults&lt;Long&gt; paths = Util.shortestPaths(fst, firstArc, fst.outputs.getNoOutput(), comparator, 3, true);
- *     System.out.println(Util.toBytesRef(paths.topN.get(0).input, scratchBytes).utf8ToString()); // cat
- *     System.out.println(paths.topN.get(0).output); // 5
- *     System.out.println(Util.toBytesRef(paths.topN.get(1).input, scratchBytes).utf8ToString()); // dog
- *     System.out.println(paths.topN.get(1).output); // 7
+ *     Arc firstArc = fst.getFirstArc(new Arc());
+ *     Util.LongTopResults paths = Util.shortestPathsLong(fst, firstArc, 0, 3, true);
+ *     System.out.println(Util.toBytesRef(paths.topN().get(0).input(), scratchBytes).utf8ToString()); // cat
+ *     System.out.println(paths.topN().get(0).output()); // 5
  * </code></pre>
+ *
+ * @lucene.experimental
  */
 package org.apache.lucene.util.fst2;
