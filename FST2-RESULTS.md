@@ -35,11 +35,15 @@ Branch `fst2-lazy-outputs` (off `main` at ccd61ff0356). Commits, in order:
 12. `fst4: hybrid design (lazy positions in Arc, holder accumulation via Outputs.readAddInto)`
 13. `fst4: correctness tests ...`, `fst4: side-by-side showcase tests (old vs hybrid API)`
 14. `fst4: JMH impl=hybrid variant`, `fst4: results added to FST2-RESULTS.md`
+15. `fst5: long-only FST (Rust fst model) with BytesRefStore side store and FSTMap layer`
+16. `fst5: correctness tests ...`, `fst5: side-by-side showcase tests (old vs long-only API with FSTMap)`
+17. `fst5: JMH impl=longs variant`, `fst5: results added to FST2-RESULTS.md`
 
 Sections 1 to 5 cover the lazy, position-based design (`fst2`). Section 6 covers the alternative
-"holder" design (`fst3`), section 7 the hybrid of the two (`fst4`). **Section 8 at the end holds
-the consolidated performance metrics for all four implementations**; the per-section tables in
-sections 1 and 6 are the earlier two- and three-way snapshots of the same runs.
+"holder" design (`fst3`), section 7 the hybrid of the two (`fst4`), section 8 the long-only FST
+with an ordinal-indexed side store (`fst5`, the Rust `fst` model). **Section 9 at the end holds the
+consolidated performance metrics for all five implementations**; the per-section tables in sections
+1 and 6 are the earlier two- and three-way snapshots of the same runs.
 
 Everything below refers to `org.apache.lucene.util.fst` as **old** and `org.apache.lucene.util.fst2`
 as **new**. The old package is untouched. All 43 `fst2` tests pass (also with
@@ -400,7 +404,7 @@ same old/new compat test including byte-identical files, same showcase pairs, sa
 
 ### 6.1 Three-way benchmark tables
 
-Superseded by the four-way tables in section 8 (same `old`/`new` runs, plus the `holder` run from
+Superseded by the four-way tables in section 9 (same `old`/`new` runs, plus the `holder` run from
 `fst3-*.json`). The notes below refer to those numbers.
 
 ### 6.2 Reading the holder numbers
@@ -605,7 +609,7 @@ appending directly into its storage. There is no boxed `add` on the read side an
 Same 43 tests, same compat test (byte-identical files), same showcase pairs, same benchmarks with
 `impl=hybrid`.
 
-### 7.1 Reading the hybrid numbers (full tables in section 8)
+### 7.1 Reading the hybrid numbers (full tables in section 9)
 
 - **Zero allocation on every reused-arc walk for every outputs type** (like the holder design),
   and **the lowest fixed cost of all through `Util.get`**: 120 B/op on heap for none, long, bytes
@@ -776,190 +780,471 @@ methods on `Outputs` (`newHolder`, `readAddInto`) and the non-generic, position-
     }
 ```
 
-## 8. Performance metrics: all four implementations
+## 8. The long-only FST with a side store (`fst5`)
+
+`org.apache.lucene.util.fst5` is the "Rust `fst` model": there is **no `Outputs` abstraction at
+all**. Every arc carries one non-negative `long` (zero means "no output" and is written as no bytes,
+exactly as `PositiveIntOutputs` does), the output algebra is fixed to (min, +), and nothing is ever
+boxed or allocated on the read side. Payloads that are not longs are not pushed along arcs: `FSTMap`
+assigns each key its ordinal as the FST output and keeps the values in a `BytesRefStore`, a compact
+random-access blob with packed offsets. Same test families as before (ported tester/TestFSTs, direct
+addressing, suffix cache, old/new compat with byte-identical files, showcase pairs), plus tests for
+the store and the map; `impl=longs` in both benchmarks (no `outputs=pair`: a single long cannot
+carry a weight *and* an ordinal, see 8.4).
+
+### 8.1 Reading the long-only numbers (full tables in section 9)
+
+- **Zero allocation on every reused-arc walk, 120 B through `Util` for every supported outputs
+  type** (the pre-existing `Arc` + reader of `Util.get`), like the hybrid; there is simply nothing
+  left to allocate. Full enumeration allocates 3.7 to 4.4 KB per million terms, the lowest of the
+  five (`bytes` included, because `FSTMap.entries()` copies each value into one reused builder).
+- **Long paths are the fastest of the five**: `lookupHitWalk/long` 0.86 / 0.80, `lookupHit/long`
+  0.95 / 0.84, `lookupMiss/long` 0.95 / 0.81, `enumerateAll/long` 0.87 / 0.81 (on / off heap,
+  ratio to old). The arc read is a plain `readVLong` into a `long` field: no position bookkeeping
+  (lazy), no holder indirection (holder, hybrid), no boxing (old).
+- **Byte payloads through the side store cost one extra random access**: `lookupHitWalk/bytes`
+  1.25 / 1.02 and `lookupHit/bytes` 1.14 / 1.04 against the old `ByteSequenceOutputs` FST, which
+  gets the payload for free while walking (its fragments sit on the arcs it reads anyway). The
+  store hit is an 11 MB array that misses cache; off heap the difference shrinks because the old
+  variant's arcs miss too. Enumeration of bytes is 1.13 / 0.98, slower on heap than old and the
+  hybrid (1.06) but allocation-free.
+- **Membership never decodes** (same code path as lazy/hybrid; the `contains` spread 0.82 to 1.10
+  across those three is the machine's noise).
+- **Top-N**: 54 KB and 0.88 / 0.91 of old. Better than the holder-based searchers (hybrid 59.5 KB,
+  1.06 to 1.16) because paths carry a `long`, not a holder; still behind the lazy design's
+  `LongTopNSearcher` (14 KB, 0.80 to 0.84), which also avoids the per-path `IntsRefBuilder` copy
+  that this generic searcher kept.
+- **Construction**: the only variant that changes construction allocation. `construct/long`
+  allocates 444 MB instead of 637 MB (0.90 of old's time) because `UnCompiledNode` arcs hold
+  primitive longs and never box; `construct/bytes` allocates 541 MB versus 508 MB and runs at 1.04
+  / 1.00 because it builds the ordinal FST *and* the store (hashing every value through a
+  `BytesRefHash`).
+
+**Net**: for long outputs this is the fastest and leanest of the five on every row, with the
+smallest API. For byte payloads it trades one random access per lookup (10 to 25% on heap) for a
+FST that is independent of the values, a store that compresses the values on its own terms, and
+zero allocation everywhere. Pairs (weight + payload) are not expressible without a second long.
+
+### 8.2 What the long-only design looks like
+
+- `FST` is not generic. `Arc` has `long output` and `long nextFinalOutput`, read eagerly with
+  `readVLong` (a varint must be consumed to reach the next field anyway, so eager is free here),
+  and `FST.NO_OUTPUT == 0`. `FSTMetadata` has `acceptsEmptyInput` + `long emptyOutput` instead of a
+  nullable boxed value.
+- `FSTCompiler.Builder(inputType)` takes no outputs; `add(IntsRef, long)`; the algebra is three
+  static methods (`common` = min, `add` = sum, `subtract` = difference). Adding the same input twice
+  is legal only with the same output (there is nothing to merge). Byte format: identical to the
+  generic FST built with `PositiveIntOutputs` (`TestFST5Compat.testIdenticalBytes`), and files are
+  loadable in both directions, including the generic `NoOutputs` empty-output encoding.
+- `FSTEnum` keeps a cumulative `long[]`; `BytesRefFSTEnum.InputOutput` has `BytesRef input` and
+  `long output` fields. `Util.get(fst, key)` returns a `long` with `Util.NOT_FOUND == -1` as the
+  miss sentinel (outputs are non-negative), with allocation-free overloads taking a reused `Arc`
+  and reader; `Util.contains`; `Util.shortestPaths(fst, arc, startOutput, topN, allowEmpty)` and
+  `TopNSearcher` with no comparator (smaller long is better, tie-break on input).
+- `BytesRefStore`: ordinal → bytes. One concatenated blob of all (distinct) values, a fixed-width
+  packed array of `numValues + 1` offsets, and, only when it is smaller, a packed `ordinal →
+  distinct value id` indirection (so repeated values are stored once; the builder hashes values as
+  they arrive and picks the smaller layout at save time). All sections are addressed through
+  `RandomAccessInput`, so one reader serves an on-heap copy (`loadOnHeap(DataInput)`) and an
+  mmapped file (`load(IndexInput)`). `get(ord, BytesRefBuilder)` copies the value into the caller's
+  builder and never allocates once the builder has grown.
+- `FSTMap`: `Builder.add(key, value)` → `compiler.add(key, ordinal)` + `store.add(value)`;
+  `ordinal(key)`, `contains(key)` (no value decoding), `get(key, BytesRefBuilder)` and its
+  allocation-free overload, `value(ordinal, dest)`, `entries()` (a cursor with `key()`,
+  `ordinal()`, `value(dest)`, `seekCeil`), `Builder.save(metaOut, out)` / `load` / `loadOffHeap`.
+- **Ordinal outputs are structural**: after pushing, an arc's output is the number of keys accepted
+  before it within its node's subtree, so identical suffix subtrees carry identical outputs and the
+  values never influence the automaton. The one exception, found by `TestFSTMap` (the first version
+  of the test asserted equality and failed by one node): an FSA merges two nodes that differ only in
+  finality, because finality is stored on the incoming arc, while a final node's own key shifts its
+  children's ordinals by one, so such pairs stay distinct. In practice this is a fraction of a
+  percent of the nodes (527 vs 528 in the test; 1M terms below: +0.7% nodes over the FSA, but far
+  fewer than with the byte outputs).
+
+Serialized sizes for the benchmark data (1,000,000 random 5-15 letter terms, random 4-12 byte
+payloads, i.e. the worst case for both representations: nothing to share), measured with a scratch
+program against the same generator and seed:
+
+| representation | bytes | nodes | arcs |
+|---|---:|---:|---:|
+| FSA (`NoOutputs` or all-zero `fst5`), identical bytes | 12,623,224 | 2,673,121 | 3,665,066 |
+| long outputs (`PositiveIntOutputs` or `fst5`), identical bytes | 18,838,780 | 2,691,131 | 3,684,207 |
+| byte payloads, `ByteSequenceOutputs` | 25,659,876 | 2,710,399 | 3,703,475 |
+| byte payloads, `fst5` `FSTMap`: ordinal FST | 13,689,307 | 2,691,131 | 3,684,207 |
+| byte payloads, `fst5` `FSTMap`: `BytesRefStore` (8,000,143 B blob + 24-bit offsets) | 11,000,190 | | |
+| byte payloads, `fst5` `FSTMap`: total | 24,689,497 | | |
+
+The ordinal FST costs 1.07 MB over the FSA (the pushed counts: small varints) and 5 MB less than
+the long-output FST with random values (same node and arc counts in this random data, where shared
+suffix subtrees with more than one term virtually do not exist, so the difference is purely output
+bytes; on the structured keys of `TestFSTMap`, arbitrary outputs produce more than 1.5x the nodes
+of the ordinal FST). The store is the raw payload plus 3 bytes per entry of offsets. The total is 4%
+below the byte-output FST even on incompressible payloads, and the store's offsets are the obvious
+next target (monotonic delta coding would cut them to well under a byte per entry here).
+
+### 8.3 API decisions that felt awkward (long-only)
+
+- **`Util.NOT_FOUND == -1` as a sentinel** instead of `null` / `Optional`. It is sound because
+  outputs are non-negative, but it is a convention the caller has to know; a `boolean get(key,
+  long[] out)` shape was the alternative and is no better.
+- **Duplicate inputs**: the generic compiler merges duplicates through `Outputs.merge`; here a
+  repeated input is accepted only with an identical output, otherwise `UnsupportedOperationException`.
+  `TestFSTs.testDuplicateFSAString` still passes because an FSA's duplicates are identical.
+- **Two values per key need two longs.** A weight for pruning plus an ordinal for the payload is
+  the suggester case; packing them into one long is unsound under min/subtract pushing (borrows
+  cross field boundaries), so the honest extension is a fixed count of longs per arc, which is not
+  implemented. Hence no `outputs=pair` row for `impl=longs`.
+- **The store's value size limit** is `BytesRefHash`'s (about 32 KB per value) because the builder
+  deduplicates through it; a streaming builder without deduplication would lift that.
+- **`FSTMap` persists in two streams** (FST metadata; FST bytes followed by the store) and reloads
+  as a whole; there is no re-save of a loaded map, only `Builder.save`.
+- **Finality breaks exact suffix sharing** (see 8.2): a design that stored finality in the node
+  (Lucene stores it on the arc) would make ordinal outputs *exactly* structural. Not changed here,
+  since it is a format change.
+
+### 8.4 Not done (long-only)
+
+- Multi-long outputs (weight + ordinal); `ListOfOutputs`; `Test2BFST*`; `PairOutputs`-based
+  suggester showcase (no equivalent without two longs, so the showcase pairs are: traversal (long),
+  traversal (bytes via `FSTMap.entries`), hit/miss, long lookup, suggester (long weights), byte
+  payload lookup (`ByteSequenceOutputs` vs ordinal + store), manual walk).
+- Store compression beyond fixed-width offsets and value deduplication; an off-heap zero-copy
+  `BytesRef` view (the on-heap store copies into the caller's builder like the off-heap one).
+- Only `size=1000000` run, `-p impl=longs -p outputs=none,long,bytes`, merged with the earlier JSON
+  files (same machine, JDK and data).
+
+### 8.5 Long-only showcase bodies (from `TestFST5Showcase`; the `_old` bodies of 1-5 and 7 are identical to section 3)
+
+### Exact lookup of a long output (`testTransducerLookup`, long-only variant)
+
+```java
+    List<Long> sample = new ArrayList<>();
+    for (BytesRef key : hits) {
+      long v = Util.get(newLongFst, key);
+      assertNotEquals(Util.NOT_FOUND, v);
+      assertEquals(reference.get(key).longValue(), v);
+      sample.add(v);
+    }
+    for (BytesRef key : misses) {
+      long v = Util.get(newLongFst, key);
+      assertEquals(Util.NOT_FOUND, v);
+    }
+    printSample("lookup(new)", sample);
+```
+
+### WFST-style top-N completion (`testSuggester`, long-only variant)
+
+```java
+    var in = newWfst.getBytesReader();
+    var scratch = new BytesRefBuilder();
+    for (String prefix : prefixes) {
+      var arc = newWfst.getFirstArc(new FST.Arc());
+      long prefixOutput = FST.NO_OUTPUT;
+      for (int i = 0; i < prefix.length(); i++) {
+        arc = newWfst.findTargetArc(prefix.charAt(i), arc, arc, in);
+        assertNotNull(arc);
+        prefixOutput += arc.output();
+      }
+      var results = Util.shortestPaths(newWfst, arc, prefixOutput, TOP_N, true);
+      List<String> completions = new ArrayList<>();
+      for (var result : results) {
+        completions.add(prefix + Util.toBytesRef(result.input(), scratch).utf8ToString());
+        long weight = Long.MAX_VALUE - result.output();
+        assertEquals(reference.get(new BytesRef(completions.getLast())).longValue(), weight);
+      }
+      assertEquals(prefix, expectedCompletions(prefix), completions);
+      printSample("suggest(new) " + prefix, completions);
+    }
+```
+
+### Manual arc walk summing outputs (`testManualWalk`, long-only variant)
+
+```java
+    var in = newLongFst.getBytesReader();
+    for (BytesRef key : hits) {
+      var arc = newLongFst.getFirstArc(new FST.Arc());
+      long acc = FST.NO_OUTPUT;
+      for (int i = 0; i < key.length; i++) {
+        arc = newLongFst.findTargetArc(key.bytes[key.offset + i] & 0xFF, arc, arc, in);
+        assertNotNull(arc);
+        acc += arc.output();
+      }
+      assertTrue(arc.isFinal());
+      acc += arc.nextFinalOutput();
+      assertEquals(reference.get(key).longValue(), acc);
+    }
+```
+
+### Byte payload lookup, generic ByteSequenceOutputs (`testPayloadLookup_old`, generic variant, for comparison)
+
+```java
+    var in = oldBytesFst.getBytesReader();
+    var outputs = oldBytesFst.outputs;
+    for (BytesRef key : hits) {
+      // Lookup through Util: concatenates the pushed byte fragments along the path.
+      BytesRef value = org.apache.lucene.util.fst.Util.get(oldBytesFst, key);
+      assertNotNull(value);
+      assertEquals(bytesOutput(key), value);
+
+      // Manual walk: every arc's fragment is decoded and appended eagerly.
+      var arc = oldBytesFst.getFirstArc(new org.apache.lucene.util.fst.FST.Arc<>());
+      BytesRef acc = outputs.getNoOutput();
+      for (int i = 0; i < key.length; i++) {
+        arc = oldBytesFst.findTargetArc(key.bytes[key.offset + i] & 0xFF, arc, arc, in);
+        acc = outputs.add(acc, arc.output());
+      }
+      assertTrue(arc.isFinal());
+      acc = outputs.add(acc, arc.nextFinalOutput());
+      assertEquals(value, acc);
+    }
+    for (BytesRef key : misses) {
+      assertNull(org.apache.lucene.util.fst.Util.get(oldBytesFst, key));
+    }
+```
+
+### Byte payload lookup, ordinal + BytesRefStore (`testPayloadLookup`, long-only variant)
+
+```java
+    var fst = newBytesMap.fst();
+    var store = newBytesMap.store();
+    var in = fst.getBytesReader();
+    BytesRefBuilder value = new BytesRefBuilder();
+    BytesRefBuilder viaWalk = new BytesRefBuilder();
+    for (BytesRef key : hits) {
+      // Lookup through the map: the FST yields the ordinal, the store copies the value.
+      assertTrue(newBytesMap.get(key, value));
+      assertEquals(bytesOutput(key), value.get());
+
+      // Manual walk: sum the ordinal deltas, then one random access into the store.
+      var arc = fst.getFirstArc(new FST.Arc());
+      long ord = FST.NO_OUTPUT;
+      for (int i = 0; i < key.length; i++) {
+        arc = fst.findTargetArc(key.bytes[key.offset + i] & 0xFF, arc, arc, in);
+        ord += arc.output();
+      }
+      assertTrue(arc.isFinal());
+      ord += arc.nextFinalOutput();
+      store.get(ord, viaWalk);
+      assertEquals(value.get(), viaWalk.get());
+    }
+    for (BytesRef key : misses) {
+      assertFalse(newBytesMap.get(key, value));
+    }
+```
+
+### Full traversal with byte payloads (`testTraversalBytes`, long-only variant)
+
+```java
+    FSTMap.Entries entries = newBytesMap.entries();
+    BytesRefBuilder value = new BytesRefBuilder();
+    int count = 0;
+    while (entries.next()) {
+      entries.value(value);
+      assertEquals(bytesOutput(entries.key()), value.get());
+      assertEquals(count, entries.ordinal());
+      count++;
+    }
+    assertEquals(reference.size(), count);
+```
+
+## 9. Performance metrics: all five implementations
 
 Setup as in section 1 (JMH 1.37, OpenJDK 25.0.3, Threadripper 3970X, 1,000,000 terms, 1 fork,
 5 x 1 s warmup, 5 x 2 s measurement, `-prof gc`). Each implementation column comes from its own
-run (`-p impl=...`) on the same machine, JDK, data seed and jar; the four runs are about an hour
-apart. "±" is the JMH 99.9% confidence half-width; on this box differences below about 15% are
-noise. The tables are generated by a script from `fst2-*.json`, `fst3-*.json` and `fst4-*.json`
+run (`-p impl=...`) on the same machine, JDK, data seed and jar; the runs are hours apart. "±" is
+the JMH 99.9% confidence half-width; on this box differences below about 15% are noise. The tables
+are generated by a script from `fst2-*.json`, `fst3-*.json`, `fst4-*.json` and `fst5-*.json`
 (untracked, next to this file). Implementations: **old** = `org.apache.lucene.util.fst` (eager,
 boxed), **lazy** = `fst2` (positions, boxed fold / primitive long path), **holder** = `fst3`
-(eager into reusable holders), **hybrid** = `fst4` (positions + holder accumulation).
+(eager into reusable holders), **hybrid** = `fst4` (positions + holder accumulation), **longs** =
+`fst5` (one primitive long per arc; `outputs=bytes` goes through `FSTMap` + `BytesRefStore`;
+`outputs=pair` not supported, shown as n/a).
 
-### 8.1 Digest (allocation on heap; time ratios to old, lower is better)
+### 9.1 Digest (allocation on heap; time ratios to old, lower is better)
 
-| benchmark | outputs | alloc old → lazy / holder / hybrid (on heap) | time ratio to old, on heap (lazy / holder / hybrid) | time ratio to old, off heap (lazy / holder / hybrid) |
+| benchmark | outputs | alloc old → lazy / holder / hybrid / longs (on heap) | time ratio to old, on heap (lazy / holder / hybrid / longs) | time ratio to old, off heap (lazy / holder / hybrid / longs) |
 |---|---|---|---|---|
-| lookupHitWalk | none | 0.0 B → 0.0 B / 0.0 B / 0.0 B | 0.95 / 0.91 / 0.96 | 0.81 / 1.01 / 0.78 |
-| lookupHitWalk | long | 190.9 B → 0.0 B / 0.0 B / 0.0 B | 1.07 / 0.89 / 0.99 | 0.84 / 1.02 / 0.86 |
-| lookupHitWalk | bytes | 52.1 B → 51.7 B / 0.0 B / 0.0 B | 1.11 / 1.24 / 1.07 | 0.95 / 1.06 / 0.99 |
-| lookupHitWalk | pair | 622.4 B → 472.5 B / 0.0 B / 0.0 B | 0.89 / 0.78 / 0.68 | 1.12 / 0.87 / 0.78 |
-| lookupHit | none | 112.0 B → 120.0 B / 144.0 B / 120.0 B | 0.92 / 1.02 / 1.00 | 0.86 / 1.04 / 0.95 |
-| lookupHit | long | 302.9 B → 120.0 B / 160.0 B / 120.0 B | 1.04 / 0.98 / 1.08 | 0.77 / 0.97 / 1.02 |
-| lookupHit | bytes | 164.1 B → 171.7 B / 254.4 B / 120.0 B | 1.07 / 1.13 / 0.96 | 0.87 / 1.05 / 0.91 |
-| lookupHit | pair | 734.4 B → 592.5 B / 350.4 B / 120.0 B | 1.01 / 0.96 / 0.76 | 1.06 / 0.87 / 0.77 |
-| lookupMiss | none | 112.0 B → 120.0 B / 144.0 B / 120.0 B | 0.98 / 1.05 / 1.00 | 1.01 / 0.98 / 0.96 |
-| lookupMiss | long | 271.6 B → 120.0 B / 160.0 B / 120.0 B | 1.17 / 0.97 / 1.09 | 1.04 / 0.97 / 1.03 |
-| lookupMiss | bytes | 128.3 B → 120.0 B / 233.6 B / 120.0 B | 0.91 / 1.17 / 1.01 | 0.95 / 1.05 / 0.99 |
-| lookupMiss | pair | 475.9 B → 120.0 B / 329.6 B / 120.0 B | 0.74 / 1.02 / 1.01 | 0.80 / 0.98 / 0.95 |
-| contains | none | 112.0 B → 120.0 B / 144.0 B / 120.0 B | 0.96 / 0.97 / 0.96 | 0.94 / 0.96 / 0.82 |
-| contains | long | 302.8 B → 120.0 B / 160.0 B / 120.0 B | 0.95 / 0.96 / 0.95 | 1.04 / 1.23 / 1.12 |
-| contains | bytes | 164.1 B → 120.0 B / 254.4 B / 120.0 B | 0.92 / 1.07 / 0.95 | 0.93 / 1.17 / 1.15 |
-| contains | pair | 734.4 B → 120.0 B / 350.4 B / 120.0 B | 0.76 / 0.87 / 0.73 | 0.65 / 0.77 / 0.70 |
-| enumerateAll | none | 3.6 KB → 3.6 KB / 4.4 KB / 4.1 KB | 0.84 / 0.96 / 0.83 | 0.87 / 0.90 / 0.86 |
-| enumerateAll | long | 48.00 MB → 4.5 KB / 4.9 KB / 4.8 KB | 1.01 / 0.88 / 1.01 | 0.93 / 0.85 / 0.95 |
-| enumerateAll | bytes | 51.65 MB → 51.68 MB / 8.0 KB / 5.2 KB | 1.07 / 1.39 / 1.06 | 0.96 / 1.35 / 1.10 |
-| enumerateAll | pair | 308.42 MB → 472.73 MB / 10.9 KB / 6.3 KB | 1.19 / 1.02 / 0.84 | 1.34 / 1.18 / 0.78 |
-| topN | N/A | 62.9 KB → 14.0 KB / 68.2 KB / 59.5 KB | 0.84 / 0.98 / 1.16 | 0.80 / 0.92 / 1.06 |
-| construct | none | 367.49 MB → 367.49 MB / 367.49 MB / 367.49 MB | 0.95 / 0.96 / 0.99 | 1.02 / 1.02 / 1.02 |
-| construct | long | 654.16 MB → 637.38 MB / 637.38 MB / 637.38 MB | 0.95 / 0.98 / 0.97 | 1.00 / 0.98 / 0.99 |
-| construct | bytes | 508.03 MB → 491.75 MB / 480.70 MB / 491.75 MB | 0.98 / 0.98 / 0.97 | 0.99 / 0.99 / 0.98 |
-| construct | pair | 1,811.04 MB → 1,784.31 MB / 1,784.30 MB / 1,784.64 MB | 1.00 / 1.00 / 0.98 | 0.99 / 1.02 / 0.99 |
+| lookupHitWalk | none | 0.0 B → 0.0 B / 0.0 B / 0.0 B / 0.0 B | 0.95 / 0.91 / 0.96 / 0.89 | 0.81 / 1.01 / 0.78 / 0.93 |
+| lookupHitWalk | long | 190.9 B → 0.0 B / 0.0 B / 0.0 B / 0.0 B | 1.07 / 0.89 / 0.99 / 0.86 | 0.84 / 1.02 / 0.86 / 0.80 |
+| lookupHitWalk | bytes | 52.1 B → 51.7 B / 0.0 B / 0.0 B / 0.0 B | 1.11 / 1.24 / 1.07 / 1.25 | 0.95 / 1.06 / 0.99 / 1.02 |
+| lookupHitWalk | pair | 622.4 B → 472.5 B / 0.0 B / 0.0 B / n/a | 0.89 / 0.78 / 0.68 / n/a | 1.12 / 0.87 / 0.78 / n/a |
+| lookupHit | none | 112.0 B → 120.0 B / 144.0 B / 120.0 B / 120.0 B | 0.92 / 1.02 / 1.00 / 0.95 | 0.86 / 1.04 / 0.95 / 0.96 |
+| lookupHit | long | 302.9 B → 120.0 B / 160.0 B / 120.0 B / 120.0 B | 1.04 / 0.98 / 1.08 / 0.95 | 0.77 / 0.97 / 1.02 / 0.84 |
+| lookupHit | bytes | 164.1 B → 171.7 B / 254.4 B / 120.0 B / 120.0 B | 1.07 / 1.13 / 0.96 / 1.14 | 0.87 / 1.05 / 0.91 / 1.04 |
+| lookupHit | pair | 734.4 B → 592.5 B / 350.4 B / 120.0 B / n/a | 1.01 / 0.96 / 0.76 / n/a | 1.06 / 0.87 / 0.77 / n/a |
+| lookupMiss | none | 112.0 B → 120.0 B / 144.0 B / 120.0 B / 120.0 B | 0.98 / 1.05 / 1.00 / 0.97 | 1.01 / 0.98 / 0.96 / 0.95 |
+| lookupMiss | long | 271.6 B → 120.0 B / 160.0 B / 120.0 B / 120.0 B | 1.17 / 0.97 / 1.09 / 0.95 | 1.04 / 0.97 / 1.03 / 0.81 |
+| lookupMiss | bytes | 128.3 B → 120.0 B / 233.6 B / 120.0 B / 120.0 B | 0.91 / 1.17 / 1.01 / 0.99 | 0.95 / 1.05 / 0.99 / 1.05 |
+| lookupMiss | pair | 475.9 B → 120.0 B / 329.6 B / 120.0 B / n/a | 0.74 / 1.02 / 1.01 / n/a | 0.80 / 0.98 / 0.95 / n/a |
+| contains | none | 112.0 B → 120.0 B / 144.0 B / 120.0 B / 120.0 B | 0.96 / 0.97 / 0.96 / 1.00 | 0.94 / 0.96 / 0.82 / 0.82 |
+| contains | long | 302.8 B → 120.0 B / 160.0 B / 120.0 B / 120.0 B | 0.95 / 0.96 / 0.95 / 1.01 | 1.04 / 1.23 / 1.12 / 1.10 |
+| contains | bytes | 164.1 B → 120.0 B / 254.4 B / 120.0 B / 120.0 B | 0.92 / 1.07 / 0.95 / 0.98 | 0.93 / 1.17 / 1.15 / 0.96 |
+| contains | pair | 734.4 B → 120.0 B / 350.4 B / 120.0 B / n/a | 0.76 / 0.87 / 0.73 / n/a | 0.65 / 0.77 / 0.70 / n/a |
+| enumerateAll | none | 3.6 KB → 3.6 KB / 4.4 KB / 4.1 KB / 3.7 KB | 0.84 / 0.96 / 0.83 / 0.89 | 0.87 / 0.90 / 0.86 / 0.86 |
+| enumerateAll | long | 48.00 MB → 4.5 KB / 4.9 KB / 4.8 KB / 3.8 KB | 1.01 / 0.88 / 1.01 / 0.87 | 0.93 / 0.85 / 0.95 / 0.81 |
+| enumerateAll | bytes | 51.65 MB → 51.68 MB / 8.0 KB / 5.2 KB / 4.4 KB | 1.07 / 1.39 / 1.06 / 1.13 | 0.96 / 1.35 / 1.10 / 0.98 |
+| enumerateAll | pair | 308.42 MB → 472.73 MB / 10.9 KB / 6.3 KB / n/a | 1.19 / 1.02 / 0.84 / n/a | 1.34 / 1.18 / 0.78 / n/a |
+| topN | N/A | 62.9 KB → 14.0 KB / 68.2 KB / 59.5 KB / 54.0 KB | 0.84 / 0.98 / 1.16 / 0.88 | 0.80 / 0.92 / 1.06 / 0.91 |
+| construct | none | 367.49 MB → 367.49 MB / 367.49 MB / 367.49 MB / 367.49 MB | 0.95 / 0.96 / 0.99 / 0.96 | 1.02 / 1.02 / 1.02 / 0.98 |
+| construct | long | 654.16 MB → 637.38 MB / 637.38 MB / 637.38 MB / 444.36 MB | 0.95 / 0.98 / 0.97 / 0.90 | 1.00 / 0.98 / 0.99 / 0.90 |
+| construct | bytes | 508.03 MB → 491.75 MB / 480.70 MB / 491.75 MB / 540.88 MB | 0.98 / 0.98 / 0.97 / 1.04 | 0.99 / 0.99 / 0.98 / 1.00 |
+| construct | pair | 1,811.04 MB → 1,784.31 MB / 1,784.30 MB / 1,784.64 MB / n/a | 1.00 / 1.00 / 0.98 / n/a | 0.99 / 1.02 / 0.99 / n/a |
 
-How to read it: `lookupHitWalk` isolates output handling (reused `Arc` and reader); `lookupHit`,
-`lookupMiss` and `contains` go through `Util` and include its per-call `Arc`/reader allocation
-(112 to 120 B on heap, 440 to 448 B off heap); `enumerateAll` is a full pass over the FST;
-`topN` is a 10-best completion of a two-letter prefix; `construct` should be flat.
+How to read it: `lookupHitWalk` isolates output handling (reused `Arc` and reader; for `longs`
+with `bytes` it includes the random access into the store); `lookupHit`, `lookupMiss` and
+`contains` go through `Util` and include its per-call `Arc`/reader allocation (112 to 120 B on
+heap, 440 to 448 B off heap); `enumerateAll` is a full pass over the FST (for `longs`/`bytes`,
+over `FSTMap.entries()` copying every value); `topN` is a 10-best completion of a two-letter
+prefix; `construct` should be flat (for `longs`/`bytes` it builds the ordinal FST *and* the store).
 
-### 8.2 Full tables
+### 9.2 Full tables
 
 ### store=onheap, size=1,000,000 terms: time per op (mean ± 99.9% CI)
 
-| benchmark | outputs | old | lazy (fst2) | holder (fst3) | hybrid (fst4) | lazy/old | holder/old | hybrid/old |
-|---|---|---:|---:|---:|---:|---:|---:|---:|
-| lookupHit | none | 427.5 ns ± 87.5 ns | 393.6 ns ± 28.2 ns | 436.4 ns ± 64.1 ns | 426.5 ns ± 77.7 ns | 0.92 | 1.02 | 1.00 |
-| lookupHit | long | 571.3 ns ± 111.3 ns | 595.8 ns ± 59.1 ns | 559.1 ns ± 106.6 ns | 615.8 ns ± 61.0 ns | 1.04 | 0.98 | 1.08 |
-| lookupHit | bytes | 577.3 ns ± 91.4 ns | 618.8 ns ± 76.7 ns | 653.0 ns ± 115.9 ns | 553.9 ns ± 99.7 ns | 1.07 | 1.13 | 0.96 |
-| lookupHit | pair | 927.8 ns ± 126.3 ns | 936.6 ns ± 173.8 ns | 887.6 ns ± 114.3 ns | 701.0 ns ± 256.6 ns | 1.01 | 0.96 | 0.76 |
-| lookupMiss | none | 222.2 ns ± 33.2 ns | 217.2 ns ± 10.6 ns | 234.4 ns ± 25.8 ns | 222.3 ns ± 38.1 ns | 0.98 | 1.05 | 1.00 |
-| lookupMiss | long | 285.7 ns ± 53.6 ns | 334.7 ns ± 50.5 ns | 277.6 ns ± 16.6 ns | 310.1 ns ± 40.8 ns | 1.17 | 0.97 | 1.09 |
-| lookupMiss | bytes | 275.7 ns ± 51.1 ns | 250.3 ns ± 51.5 ns | 322.9 ns ± 61.1 ns | 278.3 ns ± 46.9 ns | 0.91 | 1.17 | 1.01 |
-| lookupMiss | pair | 425.1 ns ± 100.6 ns | 315.3 ns ± 71.1 ns | 435.5 ns ± 65.0 ns | 427.6 ns ± 59.9 ns | 0.74 | 1.02 | 1.01 |
-| lookupHitWalk | none | 433.9 ns ± 124.9 ns | 411.9 ns ± 74.2 ns | 393.7 ns ± 106.6 ns | 418.0 ns ± 80.1 ns | 0.95 | 0.91 | 0.96 |
-| lookupHitWalk | long | 607.0 ns ± 122.6 ns | 651.5 ns ± 68.3 ns | 538.4 ns ± 76.7 ns | 603.3 ns ± 88.2 ns | 1.07 | 0.89 | 0.99 |
-| lookupHitWalk | bytes | 529.9 ns ± 104.3 ns | 586.0 ns ± 117.3 ns | 659.2 ns ± 107.1 ns | 568.8 ns ± 145.1 ns | 1.11 | 1.24 | 1.07 |
-| lookupHitWalk | pair | 1.02 µs ± 201.8 ns | 913.4 ns ± 141.8 ns | 797.2 ns ± 300.3 ns | 693.3 ns ± 119.2 ns | 0.89 | 0.78 | 0.68 |
-| contains | none | 422.1 ns ± 107.7 ns | 406.6 ns ± 55.3 ns | 409.2 ns ± 81.5 ns | 403.8 ns ± 66.2 ns | 0.96 | 0.97 | 0.96 |
-| contains | long | 586.0 ns ± 114.9 ns | 558.7 ns ± 126.5 ns | 565.0 ns ± 168.7 ns | 557.6 ns ± 71.7 ns | 0.95 | 0.96 | 0.95 |
-| contains | bytes | 556.4 ns ± 130.5 ns | 513.6 ns ± 117.4 ns | 594.5 ns ± 173.6 ns | 527.2 ns ± 135.6 ns | 0.92 | 1.07 | 0.95 |
-| contains | pair | 912.8 ns ± 94.3 ns | 690.8 ns ± 137.5 ns | 794.0 ns ± 124.5 ns | 670.4 ns ± 159.2 ns | 0.76 | 0.87 | 0.73 |
-| enumerateAll | none | 233.35 ms ± 7.93 ms | 195.46 ms ± 8.31 ms | 224.99 ms ± 19.67 ms | 193.87 ms ± 25.67 ms | 0.84 | 0.96 | 0.83 |
-| enumerateAll | long | 262.70 ms ± 42.28 ms | 264.93 ms ± 33.23 ms | 230.91 ms ± 30.13 ms | 266.31 ms ± 29.54 ms | 1.01 | 0.88 | 1.01 |
-| enumerateAll | bytes | 270.74 ms ± 45.52 ms | 289.50 ms ± 52.21 ms | 377.00 ms ± 29.56 ms | 286.97 ms ± 21.41 ms | 1.07 | 1.39 | 1.06 |
-| enumerateAll | pair | 422.42 ms ± 49.76 ms | 501.75 ms ± 13.79 ms | 428.76 ms ± 30.22 ms | 354.06 ms ± 37.44 ms | 1.19 | 1.02 | 0.84 |
-| topN | N/A | 30.10 µs ± 3.06 µs | 25.23 µs ± 3.27 µs | 29.37 µs ± 2.61 µs | 34.83 µs ± 3.71 µs | 0.84 | 0.98 | 1.16 |
-| construct | none | 1,812.63 ms ± 290.98 ms | 1,727.40 ms ± 177.11 ms | 1,747.27 ms ± 90.50 ms | 1,801.69 ms ± 192.86 ms | 0.95 | 0.96 | 0.99 |
-| construct | long | 2,150.43 ms ± 201.06 ms | 2,040.52 ms ± 94.22 ms | 2,113.18 ms ± 159.88 ms | 2,085.74 ms ± 121.19 ms | 0.95 | 0.98 | 0.97 |
-| construct | bytes | 2,055.32 ms ± 213.03 ms | 2,014.20 ms ± 15.78 ms | 2,020.23 ms ± 123.42 ms | 2,002.59 ms ± 108.34 ms | 0.98 | 0.98 | 0.97 |
-| construct | pair | 2,982.40 ms ± 190.24 ms | 2,981.92 ms ± 213.87 ms | 2,988.08 ms ± 92.08 ms | 2,916.01 ms ± 266.57 ms | 1.00 | 1.00 | 0.98 |
+| benchmark | outputs | old | lazy (fst2) | holder (fst3) | hybrid (fst4) | longs (fst5) | lazy/old | holder/old | hybrid/old | longs/old |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| lookupHit | none | 427.5 ns ± 87.5 ns | 393.6 ns ± 28.2 ns | 436.4 ns ± 64.1 ns | 426.5 ns ± 77.7 ns | 407.0 ns ± 60.2 ns | 0.92 | 1.02 | 1.00 | 0.95 |
+| lookupHit | long | 571.3 ns ± 111.3 ns | 595.8 ns ± 59.1 ns | 559.1 ns ± 106.6 ns | 615.8 ns ± 61.0 ns | 545.0 ns ± 138.8 ns | 1.04 | 0.98 | 1.08 | 0.95 |
+| lookupHit | bytes | 577.3 ns ± 91.4 ns | 618.8 ns ± 76.7 ns | 653.0 ns ± 115.9 ns | 553.9 ns ± 99.7 ns | 660.0 ns ± 134.4 ns | 1.07 | 1.13 | 0.96 | 1.14 |
+| lookupHit | pair | 927.8 ns ± 126.3 ns | 936.6 ns ± 173.8 ns | 887.6 ns ± 114.3 ns | 701.0 ns ± 256.6 ns | n/a | 1.01 | 0.96 | 0.76 | n/a |
+| lookupMiss | none | 222.2 ns ± 33.2 ns | 217.2 ns ± 10.6 ns | 234.4 ns ± 25.8 ns | 222.3 ns ± 38.1 ns | 214.7 ns ± 32.5 ns | 0.98 | 1.05 | 1.00 | 0.97 |
+| lookupMiss | long | 285.7 ns ± 53.6 ns | 334.7 ns ± 50.5 ns | 277.6 ns ± 16.6 ns | 310.1 ns ± 40.8 ns | 271.0 ns ± 33.8 ns | 1.17 | 0.97 | 1.09 | 0.95 |
+| lookupMiss | bytes | 275.7 ns ± 51.1 ns | 250.3 ns ± 51.5 ns | 322.9 ns ± 61.1 ns | 278.3 ns ± 46.9 ns | 271.8 ns ± 36.4 ns | 0.91 | 1.17 | 1.01 | 0.99 |
+| lookupMiss | pair | 425.1 ns ± 100.6 ns | 315.3 ns ± 71.1 ns | 435.5 ns ± 65.0 ns | 427.6 ns ± 59.9 ns | n/a | 0.74 | 1.02 | 1.01 | n/a |
+| lookupHitWalk | none | 433.9 ns ± 124.9 ns | 411.9 ns ± 74.2 ns | 393.7 ns ± 106.6 ns | 418.0 ns ± 80.1 ns | 388.0 ns ± 107.9 ns | 0.95 | 0.91 | 0.96 | 0.89 |
+| lookupHitWalk | long | 607.0 ns ± 122.6 ns | 651.5 ns ± 68.3 ns | 538.4 ns ± 76.7 ns | 603.3 ns ± 88.2 ns | 523.8 ns ± 246.7 ns | 1.07 | 0.89 | 0.99 | 0.86 |
+| lookupHitWalk | bytes | 529.9 ns ± 104.3 ns | 586.0 ns ± 117.3 ns | 659.2 ns ± 107.1 ns | 568.8 ns ± 145.1 ns | 662.4 ns ± 214.2 ns | 1.11 | 1.24 | 1.07 | 1.25 |
+| lookupHitWalk | pair | 1.02 µs ± 201.8 ns | 913.4 ns ± 141.8 ns | 797.2 ns ± 300.3 ns | 693.3 ns ± 119.2 ns | n/a | 0.89 | 0.78 | 0.68 | n/a |
+| contains | none | 422.1 ns ± 107.7 ns | 406.6 ns ± 55.3 ns | 409.2 ns ± 81.5 ns | 403.8 ns ± 66.2 ns | 423.5 ns ± 32.7 ns | 0.96 | 0.97 | 0.96 | 1.00 |
+| contains | long | 586.0 ns ± 114.9 ns | 558.7 ns ± 126.5 ns | 565.0 ns ± 168.7 ns | 557.6 ns ± 71.7 ns | 590.3 ns ± 156.2 ns | 0.95 | 0.96 | 0.95 | 1.01 |
+| contains | bytes | 556.4 ns ± 130.5 ns | 513.6 ns ± 117.4 ns | 594.5 ns ± 173.6 ns | 527.2 ns ± 135.6 ns | 547.7 ns ± 115.3 ns | 0.92 | 1.07 | 0.95 | 0.98 |
+| contains | pair | 912.8 ns ± 94.3 ns | 690.8 ns ± 137.5 ns | 794.0 ns ± 124.5 ns | 670.4 ns ± 159.2 ns | n/a | 0.76 | 0.87 | 0.73 | n/a |
+| enumerateAll | none | 233.35 ms ± 7.93 ms | 195.46 ms ± 8.31 ms | 224.99 ms ± 19.67 ms | 193.87 ms ± 25.67 ms | 208.33 ms ± 26.24 ms | 0.84 | 0.96 | 0.83 | 0.89 |
+| enumerateAll | long | 262.70 ms ± 42.28 ms | 264.93 ms ± 33.23 ms | 230.91 ms ± 30.13 ms | 266.31 ms ± 29.54 ms | 227.48 ms ± 37.35 ms | 1.01 | 0.88 | 1.01 | 0.87 |
+| enumerateAll | bytes | 270.74 ms ± 45.52 ms | 289.50 ms ± 52.21 ms | 377.00 ms ± 29.56 ms | 286.97 ms ± 21.41 ms | 306.46 ms ± 49.20 ms | 1.07 | 1.39 | 1.06 | 1.13 |
+| enumerateAll | pair | 422.42 ms ± 49.76 ms | 501.75 ms ± 13.79 ms | 428.76 ms ± 30.22 ms | 354.06 ms ± 37.44 ms | n/a | 1.19 | 1.02 | 0.84 | n/a |
+| topN | N/A | 30.10 µs ± 3.06 µs | 25.23 µs ± 3.27 µs | 29.37 µs ± 2.61 µs | 34.83 µs ± 3.71 µs | 26.42 µs ± 3.35 µs | 0.84 | 0.98 | 1.16 | 0.88 |
+| construct | none | 1,812.63 ms ± 290.98 ms | 1,727.40 ms ± 177.11 ms | 1,747.27 ms ± 90.50 ms | 1,801.69 ms ± 192.86 ms | 1,742.45 ms ± 182.08 ms | 0.95 | 0.96 | 0.99 | 0.96 |
+| construct | long | 2,150.43 ms ± 201.06 ms | 2,040.52 ms ± 94.22 ms | 2,113.18 ms ± 159.88 ms | 2,085.74 ms ± 121.19 ms | 1,938.72 ms ± 166.49 ms | 0.95 | 0.98 | 0.97 | 0.90 |
+| construct | bytes | 2,055.32 ms ± 213.03 ms | 2,014.20 ms ± 15.78 ms | 2,020.23 ms ± 123.42 ms | 2,002.59 ms ± 108.34 ms | 2,127.36 ms ± 223.69 ms | 0.98 | 0.98 | 0.97 | 1.04 |
+| construct | pair | 2,982.40 ms ± 190.24 ms | 2,981.92 ms ± 213.87 ms | 2,988.08 ms ± 92.08 ms | 2,916.01 ms ± 266.57 ms | n/a | 1.00 | 1.00 | 0.98 | n/a |
 
 ### store=onheap, size=1,000,000 terms: allocation per op (gc.alloc.rate.norm)
 
-| benchmark | outputs | old B/op | lazy B/op | holder B/op | hybrid B/op |
-|---|---|---:|---:|---:|---:|
-| lookupHit | none | 112.0 B | 120.0 B | 144.0 B | 120.0 B |
-| lookupHit | long | 302.9 B | 120.0 B | 160.0 B | 120.0 B |
-| lookupHit | bytes | 164.1 B | 171.7 B | 254.4 B | 120.0 B |
-| lookupHit | pair | 734.4 B | 592.5 B | 350.4 B | 120.0 B |
-| lookupMiss | none | 112.0 B | 120.0 B | 144.0 B | 120.0 B |
-| lookupMiss | long | 271.6 B | 120.0 B | 160.0 B | 120.0 B |
-| lookupMiss | bytes | 128.3 B | 120.0 B | 233.6 B | 120.0 B |
-| lookupMiss | pair | 475.9 B | 120.0 B | 329.6 B | 120.0 B |
-| lookupHitWalk | none | 0.0 B | 0.0 B | 0.0 B | 0.0 B |
-| lookupHitWalk | long | 190.9 B | 0.0 B | 0.0 B | 0.0 B |
-| lookupHitWalk | bytes | 52.1 B | 51.7 B | 0.0 B | 0.0 B |
-| lookupHitWalk | pair | 622.4 B | 472.5 B | 0.0 B | 0.0 B |
-| contains | none | 112.0 B | 120.0 B | 144.0 B | 120.0 B |
-| contains | long | 302.8 B | 120.0 B | 160.0 B | 120.0 B |
-| contains | bytes | 164.1 B | 120.0 B | 254.4 B | 120.0 B |
-| contains | pair | 734.4 B | 120.0 B | 350.4 B | 120.0 B |
-| enumerateAll | none | 3.6 KB | 3.6 KB | 4.4 KB | 4.1 KB |
-| enumerateAll | long | 48.00 MB | 4.5 KB | 4.9 KB | 4.8 KB |
-| enumerateAll | bytes | 51.65 MB | 51.68 MB | 8.0 KB | 5.2 KB |
-| enumerateAll | pair | 308.42 MB | 472.73 MB | 10.9 KB | 6.3 KB |
-| topN | N/A | 62.9 KB | 14.0 KB | 68.2 KB | 59.5 KB |
-| construct | none | 367.49 MB | 367.49 MB | 367.49 MB | 367.49 MB |
-| construct | long | 654.16 MB | 637.38 MB | 637.38 MB | 637.38 MB |
-| construct | bytes | 508.03 MB | 491.75 MB | 480.70 MB | 491.75 MB |
-| construct | pair | 1,811.04 MB | 1,784.31 MB | 1,784.30 MB | 1,784.64 MB |
+| benchmark | outputs | old B/op | lazy B/op | holder B/op | hybrid B/op | longs B/op |
+|---|---|---:|---:|---:|---:|---:|
+| lookupHit | none | 112.0 B | 120.0 B | 144.0 B | 120.0 B | 120.0 B |
+| lookupHit | long | 302.9 B | 120.0 B | 160.0 B | 120.0 B | 120.0 B |
+| lookupHit | bytes | 164.1 B | 171.7 B | 254.4 B | 120.0 B | 120.0 B |
+| lookupHit | pair | 734.4 B | 592.5 B | 350.4 B | 120.0 B | n/a |
+| lookupMiss | none | 112.0 B | 120.0 B | 144.0 B | 120.0 B | 120.0 B |
+| lookupMiss | long | 271.6 B | 120.0 B | 160.0 B | 120.0 B | 120.0 B |
+| lookupMiss | bytes | 128.3 B | 120.0 B | 233.6 B | 120.0 B | 120.0 B |
+| lookupMiss | pair | 475.9 B | 120.0 B | 329.6 B | 120.0 B | n/a |
+| lookupHitWalk | none | 0.0 B | 0.0 B | 0.0 B | 0.0 B | 0.0 B |
+| lookupHitWalk | long | 190.9 B | 0.0 B | 0.0 B | 0.0 B | 0.0 B |
+| lookupHitWalk | bytes | 52.1 B | 51.7 B | 0.0 B | 0.0 B | 0.0 B |
+| lookupHitWalk | pair | 622.4 B | 472.5 B | 0.0 B | 0.0 B | n/a |
+| contains | none | 112.0 B | 120.0 B | 144.0 B | 120.0 B | 120.0 B |
+| contains | long | 302.8 B | 120.0 B | 160.0 B | 120.0 B | 120.0 B |
+| contains | bytes | 164.1 B | 120.0 B | 254.4 B | 120.0 B | 120.0 B |
+| contains | pair | 734.4 B | 120.0 B | 350.4 B | 120.0 B | n/a |
+| enumerateAll | none | 3.6 KB | 3.6 KB | 4.4 KB | 4.1 KB | 3.7 KB |
+| enumerateAll | long | 48.00 MB | 4.5 KB | 4.9 KB | 4.8 KB | 3.8 KB |
+| enumerateAll | bytes | 51.65 MB | 51.68 MB | 8.0 KB | 5.2 KB | 4.4 KB |
+| enumerateAll | pair | 308.42 MB | 472.73 MB | 10.9 KB | 6.3 KB | n/a |
+| topN | N/A | 62.9 KB | 14.0 KB | 68.2 KB | 59.5 KB | 54.0 KB |
+| construct | none | 367.49 MB | 367.49 MB | 367.49 MB | 367.49 MB | 367.49 MB |
+| construct | long | 654.16 MB | 637.38 MB | 637.38 MB | 637.38 MB | 444.36 MB |
+| construct | bytes | 508.03 MB | 491.75 MB | 480.70 MB | 491.75 MB | 540.88 MB |
+| construct | pair | 1,811.04 MB | 1,784.31 MB | 1,784.30 MB | 1,784.64 MB | n/a |
 
 ### store=offheap, size=1,000,000 terms: time per op (mean ± 99.9% CI)
 
-| benchmark | outputs | old | lazy (fst2) | holder (fst3) | hybrid (fst4) | lazy/old | holder/old | hybrid/old |
-|---|---|---:|---:|---:|---:|---:|---:|---:|
-| lookupHit | none | 466.3 ns ± 83.6 ns | 399.2 ns ± 58.7 ns | 482.6 ns ± 125.9 ns | 445.0 ns ± 86.1 ns | 0.86 | 1.04 | 0.95 |
-| lookupHit | long | 699.7 ns ± 89.1 ns | 542.0 ns ± 94.4 ns | 678.7 ns ± 172.4 ns | 714.3 ns ± 123.1 ns | 0.77 | 0.97 | 1.02 |
-| lookupHit | bytes | 696.4 ns ± 102.6 ns | 607.0 ns ± 84.6 ns | 729.8 ns ± 98.2 ns | 633.0 ns ± 134.3 ns | 0.87 | 1.05 | 0.91 |
-| lookupHit | pair | 1.11 µs ± 155.2 ns | 1.17 µs ± 133.9 ns | 967.7 ns ± 85.2 ns | 856.6 ns ± 117.7 ns | 1.06 | 0.87 | 0.77 |
-| lookupMiss | none | 313.2 ns ± 40.1 ns | 316.8 ns ± 48.5 ns | 307.4 ns ± 47.2 ns | 299.9 ns ± 44.8 ns | 1.01 | 0.98 | 0.96 |
-| lookupMiss | long | 452.3 ns ± 38.9 ns | 469.2 ns ± 39.8 ns | 440.2 ns ± 56.7 ns | 466.3 ns ± 60.5 ns | 1.04 | 0.97 | 1.03 |
-| lookupMiss | bytes | 355.4 ns ± 21.7 ns | 337.6 ns ± 68.8 ns | 374.6 ns ± 57.4 ns | 353.6 ns ± 56.9 ns | 0.95 | 1.05 | 0.99 |
-| lookupMiss | pair | 597.7 ns ± 99.8 ns | 477.6 ns ± 44.7 ns | 588.3 ns ± 57.5 ns | 568.6 ns ± 68.4 ns | 0.80 | 0.98 | 0.95 |
-| lookupHitWalk | none | 383.7 ns ± 93.4 ns | 310.2 ns ± 40.1 ns | 388.9 ns ± 50.3 ns | 297.7 ns ± 65.3 ns | 0.81 | 1.01 | 0.78 |
-| lookupHitWalk | long | 624.6 ns ± 135.4 ns | 522.1 ns ± 153.8 ns | 638.6 ns ± 98.5 ns | 534.1 ns ± 97.0 ns | 0.84 | 1.02 | 0.86 |
-| lookupHitWalk | bytes | 563.6 ns ± 113.3 ns | 538.1 ns ± 100.6 ns | 599.4 ns ± 188.2 ns | 557.9 ns ± 104.9 ns | 0.95 | 1.06 | 0.99 |
-| lookupHitWalk | pair | 948.6 ns ± 111.6 ns | 1.06 µs ± 141.7 ns | 822.8 ns ± 141.0 ns | 735.8 ns ± 52.5 ns | 1.12 | 0.87 | 0.78 |
-| contains | none | 475.1 ns ± 72.0 ns | 446.9 ns ± 90.2 ns | 457.2 ns ± 124.6 ns | 387.9 ns ± 95.5 ns | 0.94 | 0.96 | 0.82 |
-| contains | long | 620.6 ns ± 86.8 ns | 644.1 ns ± 89.3 ns | 765.1 ns ± 153.4 ns | 693.6 ns ± 45.7 ns | 1.04 | 1.23 | 1.12 |
-| contains | bytes | 585.4 ns ± 123.9 ns | 544.5 ns ± 112.0 ns | 684.6 ns ± 105.2 ns | 670.5 ns ± 132.3 ns | 0.93 | 1.17 | 1.15 |
-| contains | pair | 1.05 µs ± 172.1 ns | 685.2 ns ± 94.5 ns | 810.0 ns ± 109.4 ns | 736.6 ns ± 144.0 ns | 0.65 | 0.77 | 0.70 |
-| enumerateAll | none | 245.04 ms ± 34.29 ms | 212.10 ms ± 10.24 ms | 219.98 ms ± 19.12 ms | 210.56 ms ± 13.66 ms | 0.87 | 0.90 | 0.86 |
-| enumerateAll | long | 306.67 ms ± 24.08 ms | 286.72 ms ± 29.31 ms | 261.45 ms ± 24.81 ms | 291.87 ms ± 40.65 ms | 0.93 | 0.85 | 0.95 |
-| enumerateAll | bytes | 301.05 ms ± 34.35 ms | 288.67 ms ± 18.49 ms | 405.50 ms ± 55.46 ms | 329.99 ms ± 30.75 ms | 0.96 | 1.35 | 1.10 |
-| enumerateAll | pair | 461.12 ms ± 61.10 ms | 618.59 ms ± 69.07 ms | 542.35 ms ± 65.44 ms | 361.09 ms ± 61.36 ms | 1.34 | 1.18 | 0.78 |
-| topN | N/A | 36.51 µs ± 3.98 µs | 29.17 µs ± 3.58 µs | 33.58 µs ± 4.79 µs | 38.66 µs ± 5.86 µs | 0.80 | 0.92 | 1.06 |
-| construct | none | 1,715.07 ms ± 108.48 ms | 1,754.58 ms ± 199.67 ms | 1,751.99 ms ± 79.63 ms | 1,742.55 ms ± 126.28 ms | 1.02 | 1.02 | 1.02 |
-| construct | long | 2,100.10 ms ± 134.90 ms | 2,104.59 ms ± 166.03 ms | 2,054.68 ms ± 145.29 ms | 2,080.57 ms ± 199.18 ms | 1.00 | 0.98 | 0.99 |
-| construct | bytes | 2,044.67 ms ± 117.42 ms | 2,017.47 ms ± 127.00 ms | 2,024.99 ms ± 103.64 ms | 1,998.22 ms ± 118.54 ms | 0.99 | 0.99 | 0.98 |
-| construct | pair | 2,988.04 ms ± 48.13 ms | 2,952.09 ms ± 191.46 ms | 3,041.95 ms ± 321.92 ms | 2,952.25 ms ± 264.62 ms | 0.99 | 1.02 | 0.99 |
+| benchmark | outputs | old | lazy (fst2) | holder (fst3) | hybrid (fst4) | longs (fst5) | lazy/old | holder/old | hybrid/old | longs/old |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| lookupHit | none | 466.3 ns ± 83.6 ns | 399.2 ns ± 58.7 ns | 482.6 ns ± 125.9 ns | 445.0 ns ± 86.1 ns | 445.7 ns ± 114.2 ns | 0.86 | 1.04 | 0.95 | 0.96 |
+| lookupHit | long | 699.7 ns ± 89.1 ns | 542.0 ns ± 94.4 ns | 678.7 ns ± 172.4 ns | 714.3 ns ± 123.1 ns | 586.7 ns ± 109.6 ns | 0.77 | 0.97 | 1.02 | 0.84 |
+| lookupHit | bytes | 696.4 ns ± 102.6 ns | 607.0 ns ± 84.6 ns | 729.8 ns ± 98.2 ns | 633.0 ns ± 134.3 ns | 723.1 ns ± 249.2 ns | 0.87 | 1.05 | 0.91 | 1.04 |
+| lookupHit | pair | 1.11 µs ± 155.2 ns | 1.17 µs ± 133.9 ns | 967.7 ns ± 85.2 ns | 856.6 ns ± 117.7 ns | n/a | 1.06 | 0.87 | 0.77 | n/a |
+| lookupMiss | none | 313.2 ns ± 40.1 ns | 316.8 ns ± 48.5 ns | 307.4 ns ± 47.2 ns | 299.9 ns ± 44.8 ns | 299.0 ns ± 44.2 ns | 1.01 | 0.98 | 0.96 | 0.95 |
+| lookupMiss | long | 452.3 ns ± 38.9 ns | 469.2 ns ± 39.8 ns | 440.2 ns ± 56.7 ns | 466.3 ns ± 60.5 ns | 367.2 ns ± 52.3 ns | 1.04 | 0.97 | 1.03 | 0.81 |
+| lookupMiss | bytes | 355.4 ns ± 21.7 ns | 337.6 ns ± 68.8 ns | 374.6 ns ± 57.4 ns | 353.6 ns ± 56.9 ns | 373.6 ns ± 76.1 ns | 0.95 | 1.05 | 0.99 | 1.05 |
+| lookupMiss | pair | 597.7 ns ± 99.8 ns | 477.6 ns ± 44.7 ns | 588.3 ns ± 57.5 ns | 568.6 ns ± 68.4 ns | n/a | 0.80 | 0.98 | 0.95 | n/a |
+| lookupHitWalk | none | 383.7 ns ± 93.4 ns | 310.2 ns ± 40.1 ns | 388.9 ns ± 50.3 ns | 297.7 ns ± 65.3 ns | 356.1 ns ± 98.6 ns | 0.81 | 1.01 | 0.78 | 0.93 |
+| lookupHitWalk | long | 624.6 ns ± 135.4 ns | 522.1 ns ± 153.8 ns | 638.6 ns ± 98.5 ns | 534.1 ns ± 97.0 ns | 500.7 ns ± 124.1 ns | 0.84 | 1.02 | 0.86 | 0.80 |
+| lookupHitWalk | bytes | 563.6 ns ± 113.3 ns | 538.1 ns ± 100.6 ns | 599.4 ns ± 188.2 ns | 557.9 ns ± 104.9 ns | 573.4 ns ± 95.8 ns | 0.95 | 1.06 | 0.99 | 1.02 |
+| lookupHitWalk | pair | 948.6 ns ± 111.6 ns | 1.06 µs ± 141.7 ns | 822.8 ns ± 141.0 ns | 735.8 ns ± 52.5 ns | n/a | 1.12 | 0.87 | 0.78 | n/a |
+| contains | none | 475.1 ns ± 72.0 ns | 446.9 ns ± 90.2 ns | 457.2 ns ± 124.6 ns | 387.9 ns ± 95.5 ns | 388.8 ns ± 83.1 ns | 0.94 | 0.96 | 0.82 | 0.82 |
+| contains | long | 620.6 ns ± 86.8 ns | 644.1 ns ± 89.3 ns | 765.1 ns ± 153.4 ns | 693.6 ns ± 45.7 ns | 682.2 ns ± 175.3 ns | 1.04 | 1.23 | 1.12 | 1.10 |
+| contains | bytes | 585.4 ns ± 123.9 ns | 544.5 ns ± 112.0 ns | 684.6 ns ± 105.2 ns | 670.5 ns ± 132.3 ns | 563.3 ns ± 40.2 ns | 0.93 | 1.17 | 1.15 | 0.96 |
+| contains | pair | 1.05 µs ± 172.1 ns | 685.2 ns ± 94.5 ns | 810.0 ns ± 109.4 ns | 736.6 ns ± 144.0 ns | n/a | 0.65 | 0.77 | 0.70 | n/a |
+| enumerateAll | none | 245.04 ms ± 34.29 ms | 212.10 ms ± 10.24 ms | 219.98 ms ± 19.12 ms | 210.56 ms ± 13.66 ms | 211.74 ms ± 30.34 ms | 0.87 | 0.90 | 0.86 | 0.86 |
+| enumerateAll | long | 306.67 ms ± 24.08 ms | 286.72 ms ± 29.31 ms | 261.45 ms ± 24.81 ms | 291.87 ms ± 40.65 ms | 247.59 ms ± 43.34 ms | 0.93 | 0.85 | 0.95 | 0.81 |
+| enumerateAll | bytes | 301.05 ms ± 34.35 ms | 288.67 ms ± 18.49 ms | 405.50 ms ± 55.46 ms | 329.99 ms ± 30.75 ms | 294.77 ms ± 28.38 ms | 0.96 | 1.35 | 1.10 | 0.98 |
+| enumerateAll | pair | 461.12 ms ± 61.10 ms | 618.59 ms ± 69.07 ms | 542.35 ms ± 65.44 ms | 361.09 ms ± 61.36 ms | n/a | 1.34 | 1.18 | 0.78 | n/a |
+| topN | N/A | 36.51 µs ± 3.98 µs | 29.17 µs ± 3.58 µs | 33.58 µs ± 4.79 µs | 38.66 µs ± 5.86 µs | 33.12 µs ± 4.64 µs | 0.80 | 0.92 | 1.06 | 0.91 |
+| construct | none | 1,715.07 ms ± 108.48 ms | 1,754.58 ms ± 199.67 ms | 1,751.99 ms ± 79.63 ms | 1,742.55 ms ± 126.28 ms | 1,680.59 ms ± 104.98 ms | 1.02 | 1.02 | 1.02 | 0.98 |
+| construct | long | 2,100.10 ms ± 134.90 ms | 2,104.59 ms ± 166.03 ms | 2,054.68 ms ± 145.29 ms | 2,080.57 ms ± 199.18 ms | 1,891.26 ms ± 189.56 ms | 1.00 | 0.98 | 0.99 | 0.90 |
+| construct | bytes | 2,044.67 ms ± 117.42 ms | 2,017.47 ms ± 127.00 ms | 2,024.99 ms ± 103.64 ms | 1,998.22 ms ± 118.54 ms | 2,037.26 ms ± 169.00 ms | 0.99 | 0.99 | 0.98 | 1.00 |
+| construct | pair | 2,988.04 ms ± 48.13 ms | 2,952.09 ms ± 191.46 ms | 3,041.95 ms ± 321.92 ms | 2,952.25 ms ± 264.62 ms | n/a | 0.99 | 1.02 | 0.99 | n/a |
 
 ### store=offheap, size=1,000,000 terms: allocation per op (gc.alloc.rate.norm)
 
-| benchmark | outputs | old B/op | lazy B/op | holder B/op | hybrid B/op |
-|---|---|---:|---:|---:|---:|
-| lookupHit | none | 440.0 B | 448.0 B | 472.0 B | 448.0 B |
-| lookupHit | long | 630.9 B | 448.0 B | 488.0 B | 448.0 B |
-| lookupHit | bytes | 492.1 B | 499.7 B | 582.5 B | 448.0 B |
-| lookupHit | pair | 1.1 KB | 920.5 B | 678.5 B | 448.0 B |
-| lookupMiss | none | 440.0 B | 448.0 B | 472.0 B | 448.0 B |
-| lookupMiss | long | 599.7 B | 448.0 B | 488.0 B | 448.0 B |
-| lookupMiss | bytes | 456.3 B | 448.0 B | 561.6 B | 448.0 B |
-| lookupMiss | pair | 803.9 B | 448.0 B | 657.6 B | 448.0 B |
-| lookupHitWalk | none | 0.0 B | 0.0 B | 0.0 B | 0.0 B |
-| lookupHitWalk | long | 190.9 B | 0.0 B | 0.0 B | 0.0 B |
-| lookupHitWalk | bytes | 52.1 B | 51.7 B | 0.0 B | 0.0 B |
-| lookupHitWalk | pair | 622.4 B | 472.5 B | 0.0 B | 0.0 B |
-| contains | none | 440.0 B | 448.0 B | 472.0 B | 448.0 B |
-| contains | long | 630.9 B | 448.0 B | 488.0 B | 448.0 B |
-| contains | bytes | 492.1 B | 448.0 B | 582.5 B | 448.0 B |
-| contains | pair | 1.1 KB | 448.0 B | 678.5 B | 448.0 B |
-| enumerateAll | none | 5.2 KB | 5.2 KB | 5.9 KB | 5.6 KB |
-| enumerateAll | long | 48.01 MB | 6.3 KB | 6.7 KB | 6.8 KB |
-| enumerateAll | bytes | 51.66 MB | 51.69 MB | 10.8 KB | 7.6 KB |
-| enumerateAll | pair | 308.43 MB | 472.73 MB | 14.6 KB | 8.4 KB |
-| topN | N/A | 63.5 KB | 14.6 KB | 68.9 KB | 60.1 KB |
-| construct | none | 367.50 MB | 367.50 MB | 367.50 MB | 367.50 MB |
-| construct | long | 654.17 MB | 637.38 MB | 637.38 MB | 637.38 MB |
-| construct | bytes | 508.07 MB | 492.04 MB | 480.70 MB | 492.05 MB |
-| construct | pair | 1,811.10 MB | 1,784.65 MB | 1,784.27 MB | 1,784.35 MB |
+| benchmark | outputs | old B/op | lazy B/op | holder B/op | hybrid B/op | longs B/op |
+|---|---|---:|---:|---:|---:|---:|
+| lookupHit | none | 440.0 B | 448.0 B | 472.0 B | 448.0 B | 448.0 B |
+| lookupHit | long | 630.9 B | 448.0 B | 488.0 B | 448.0 B | 448.0 B |
+| lookupHit | bytes | 492.1 B | 499.7 B | 582.5 B | 448.0 B | 448.0 B |
+| lookupHit | pair | 1.1 KB | 920.5 B | 678.5 B | 448.0 B | n/a |
+| lookupMiss | none | 440.0 B | 448.0 B | 472.0 B | 448.0 B | 448.0 B |
+| lookupMiss | long | 599.7 B | 448.0 B | 488.0 B | 448.0 B | 448.0 B |
+| lookupMiss | bytes | 456.3 B | 448.0 B | 561.6 B | 448.0 B | 448.0 B |
+| lookupMiss | pair | 803.9 B | 448.0 B | 657.6 B | 448.0 B | n/a |
+| lookupHitWalk | none | 0.0 B | 0.0 B | 0.0 B | 0.0 B | 0.0 B |
+| lookupHitWalk | long | 190.9 B | 0.0 B | 0.0 B | 0.0 B | 0.0 B |
+| lookupHitWalk | bytes | 52.1 B | 51.7 B | 0.0 B | 0.0 B | 0.0 B |
+| lookupHitWalk | pair | 622.4 B | 472.5 B | 0.0 B | 0.0 B | n/a |
+| contains | none | 440.0 B | 448.0 B | 472.0 B | 448.0 B | 448.0 B |
+| contains | long | 630.9 B | 448.0 B | 488.0 B | 448.0 B | 448.0 B |
+| contains | bytes | 492.1 B | 448.0 B | 582.5 B | 448.0 B | 448.0 B |
+| contains | pair | 1.1 KB | 448.0 B | 678.5 B | 448.0 B | n/a |
+| enumerateAll | none | 5.2 KB | 5.2 KB | 5.9 KB | 5.6 KB | 5.4 KB |
+| enumerateAll | long | 48.01 MB | 6.3 KB | 6.7 KB | 6.8 KB | 5.7 KB |
+| enumerateAll | bytes | 51.66 MB | 51.69 MB | 10.8 KB | 7.6 KB | 5.9 KB |
+| enumerateAll | pair | 308.43 MB | 472.73 MB | 14.6 KB | 8.4 KB | n/a |
+| topN | N/A | 63.5 KB | 14.6 KB | 68.9 KB | 60.1 KB | 54.6 KB |
+| construct | none | 367.50 MB | 367.50 MB | 367.50 MB | 367.50 MB | 367.50 MB |
+| construct | long | 654.17 MB | 637.38 MB | 637.38 MB | 637.38 MB | 444.37 MB |
+| construct | bytes | 508.07 MB | 492.04 MB | 480.70 MB | 492.05 MB | 540.88 MB |
+| construct | pair | 1,811.10 MB | 1,784.65 MB | 1,784.27 MB | 1,784.35 MB | n/a |
 
-### 8.3 Summary
+### 9.3 Summary
 
-| criterion | old | lazy (fst2) | holder (fst3) | hybrid (fst4) |
-|---|---|---|---|---|
-| allocation, reused-arc walk (none/long/bytes/pair) | 0 / 191 B / 52 B / 622 B | 0 / 0 / 52 B / 473 B | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 |
-| allocation, full enumeration of 1M terms (long/bytes/pair) | 48 MB / 52 MB / 308 MB | 4.5 KB / 52 MB / 473 MB | 4.9 KB / 8 KB / 11 KB | 4.8 KB / 5.2 KB / 6.3 KB |
-| membership and misses decode outputs? | yes | no | yes | no |
-| time, pair enumeration vs old (on/off heap) | 1.00 | 1.19 / 1.34 | 1.02 / 1.18 | 0.84 / 0.78 |
-| time, bytes enumeration vs old | 1.00 | 1.07 / 0.96 | 1.39 / 1.35 | 1.06 / 1.10 |
-| top-N allocation / time vs old | 63 KB / 1.00 | 14 KB / 0.80-0.84 | 68 KB / 0.92-0.98 | 60 KB / 1.06-1.16 |
-| new `Outputs` methods required | none | `skipOutput` overrides (+ optional `LongOutputs`) | `newHolder`, `readInto`, `addInto` | `newHolder`, `readAddInto` |
-| `Arc` API | generic, boxed values | non-generic, positions | generic, holders | non-generic, positions |
-| construction / file format | unchanged | unchanged, byte-identical | unchanged, byte-identical | unchanged, byte-identical |
+| criterion | old | lazy (fst2) | holder (fst3) | hybrid (fst4) | longs (fst5) |
+|---|---|---|---|---|---|
+| allocation, reused-arc walk (none/long/bytes/pair) | 0 / 191 B / 52 B / 622 B | 0 / 0 / 52 B / 473 B | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / n/a |
+| allocation, full enumeration of 1M terms (long/bytes/pair) | 48 MB / 52 MB / 308 MB | 4.5 KB / 52 MB / 473 MB | 4.9 KB / 8 KB / 11 KB | 4.8 KB / 5.2 KB / 6.3 KB | 3.8 KB / 4.4 KB / n/a |
+| membership and misses decode outputs? | yes | no | yes | no | no (a long is read, nothing is built) |
+| time, long lookup walk vs old (on/off heap) | 1.00 | 1.07 / 0.84 | 0.89 / 1.02 | 0.99 / 0.86 | 0.86 / 0.80 |
+| time, long enumeration vs old | 1.00 | 1.01 / 0.93 | 0.88 / 0.85 | 1.01 / 0.95 | 0.87 / 0.81 |
+| time, bytes lookup walk vs old | 1.00 | 1.11 / 0.95 | 1.24 / 1.06 | 1.07 / 0.99 | 1.25 / 1.02 (store access) |
+| time, bytes enumeration vs old | 1.00 | 1.07 / 0.96 | 1.39 / 1.35 | 1.06 / 1.10 | 1.13 / 0.98 |
+| time, pair enumeration vs old | 1.00 | 1.19 / 1.34 | 1.02 / 1.18 | 0.84 / 0.78 | n/a |
+| top-N allocation / time vs old | 63 KB / 1.00 | 14 KB / 0.80-0.84 | 68 KB / 0.92-0.98 | 60 KB / 1.06-1.16 | 54 KB / 0.88-0.91 |
+| construction allocation (long / bytes) | 654 / 508 MB | 637 / 492 MB | 637 / 481 MB | 637 / 492 MB | 444 / 541 MB (FST + store) |
+| size, 1M terms with byte payloads | 25.7 MB | 25.7 MB | 25.7 MB | 25.7 MB | 24.7 MB (13.7 FST + 11.0 store) |
+| new `Outputs` methods required | none | `skipOutput` overrides (+ optional `LongOutputs`) | `newHolder`, `readInto`, `addInto` | `newHolder`, `readAddInto` | no `Outputs` at all |
+| `Arc` API | generic, boxed values | non-generic, positions | generic, holders | non-generic, positions | non-generic, `long` fields |
+| supports byte / pair outputs | yes / yes | yes / yes | yes / yes | yes / yes | via `FSTMap` + store / no |
+| construction / file format | unchanged | unchanged, byte-identical | unchanged, byte-identical | unchanged, byte-identical | byte-identical to `PositiveIntOutputs` |
 
-The hybrid is the only variant that is allocation-free (modulo `Util`'s per-call `Arc` and reader)
-for every outputs type on every traversal pattern measured, while keeping the lazy design's ability
-to skip decoding entirely. Its remaining gap is the generic top-N searcher, which the lazy design's
-primitive specialization beats; that is an implementation detail of `TopNSearcher`, not of the
-output representation.
+Two of the five end up as the credible candidates. The **hybrid** keeps the generic `Outputs<T>`
+contract (every existing user compiles against a `T`) and is allocation-free for all output types,
+with its only weak row in the generic top-N searcher. The **long-only FST** is the simplest and the
+fastest wherever a long is the output, and it moves payloads to a store that is independent of the
+automaton; its costs are one extra random access per byte-payload lookup, the loss of `Pair`
+outputs until a multi-long arc exists, and an API change for every current user of
+`ByteSequenceOutputs`, `CharSequenceOutputs`, `IntSequenceOutputs` and `PairOutputs`. The lazy
+design remains the reference for what a primitive top-N searcher buys; the holder design is
+dominated by the hybrid.
