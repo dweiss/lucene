@@ -258,7 +258,7 @@ public class FSTOutputsBenchmark {
       switch (kind) {
         case NONE -> bh.consume(org.apache.lucene.util.fst2.Util.contains(newFst, key));
         case LONG -> bh.consume(org.apache.lucene.util.fst2.Util.getLong(newFst, key, -1));
-        default -> bh.consume(org.apache.lucene.util.fst2.Util.get(newFst, key, scratch));
+        case BYTES, PAIR -> bh.consume(org.apache.lucene.util.fst2.Util.get(newFst, key, scratch));
       }
     }
   }
@@ -328,7 +328,7 @@ public class FSTOutputsBenchmark {
           }
           bh.consume(acc);
         }
-        default -> {
+        case BYTES, PAIR -> {
           int n = 0;
           for (int i = 0; i < key.length; i++) {
             if (fst.findTargetArc(key.bytes[key.offset + i] & 0xFF, arc, arc, in) == null) {
@@ -376,7 +376,7 @@ public class FSTOutputsBenchmark {
         switch (kind) {
           case NONE -> {}
           case LONG -> bh.consume(e.currentOutputLong());
-          default -> bh.consume(e.currentOutput());
+          case BYTES, PAIR -> bh.consume(e.currentOutput());
         }
       }
     }
