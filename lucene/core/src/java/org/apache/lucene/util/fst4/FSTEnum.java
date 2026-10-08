@@ -32,14 +32,20 @@ abstract class FSTEnum<T> {
 
   protected FST.Arc[] arcs = new FST.Arc[10];
 
-  // Positions of the arc outputs taken at each depth (not cumulative); folded on demand by
-  // currentOutput().
+  // Positions of the arc outputs taken at each depth (not cumulative).
   protected long[] outputPos = new long[10];
 
-  // Cumulative primitive outputs per depth; only allocated when fst.hasLongOutputs().
-  protected long[] outputLong;
+  // Lazily filled cumulative outputs: accRef[d] is the accumulated output of depths 0..d and is
+  // valid for d < accValid. It either aliases accRef[d - 1] (the arc at depth d has no output,
+  // so nothing is copied) or is this depth's own holder acc[d].
+  @SuppressWarnings({"rawtypes", "unchecked"})
+  private OutputHolder<T>[] acc = (OutputHolder<T>[]) new OutputHolder[10];
 
-  private final LongOutputs longOutputs;
+  @SuppressWarnings({"rawtypes", "unchecked"})
+  private OutputHolder<T>[] accRef = (OutputHolder<T>[]) new OutputHolder[10];
+
+  private int accValid;
+  private final OutputHolder<T> noOutput;
   protected final FST.BytesReader fstReader;
 
   protected int upto;
@@ -54,42 +60,40 @@ abstract class FSTEnum<T> {
     fstReader = fst.getBytesReader();
     fst.getFirstArc(getArc(0));
     outputPos[0] = FST.NO_OUTPUT_POS;
-    if (fst.hasLongOutputs()) {
-      longOutputs = (LongOutputs) fst.outputs;
-      outputLong = new long[10];
-      outputLong[0] = longOutputs.noOutputLong();
-    } else {
-      longOutputs = null;
-      outputLong = null;
-    }
+    noOutput = fst.outputs.newHolder();
+    accRef[0] = noOutput;
+    accValid = 1;
   }
 
   /**
-   * Decodes the output of the current entry by folding the outputs along the path from the root.
-   * Allocates only what {@link Outputs#add} allocates.
+   * The output of the current entry, accumulated on demand into a holder owned by this enum. Only
+   * the depths that changed since the last call are recomputed, so a full enumeration decodes each
+   * arc output once. The returned holder is valid until the enum moves.
    */
-  public T currentOutput() throws IOException {
-    return fst.fold(outputPos, upto + 1, fstReader);
-  }
-
-  /**
-   * The output of the current entry as a primitive {@code long}; requires {@link
-   * FST#hasLongOutputs()}.
-   */
-  public long currentOutputLong() {
-    if (outputLong == null) {
-      throw new IllegalStateException(fst.outputs + " does not implement LongOutputs");
+  public OutputHolder<T> currentOutput() throws IOException {
+    for (int d = accValid; d <= upto; d++) {
+      final long pos = outputPos[d];
+      if (pos == FST.NO_OUTPUT_POS) {
+        accRef[d] = accRef[d - 1];
+      } else {
+        OutputHolder<T> h = acc[d];
+        if (h == null) {
+          h = acc[d] = noOutput.newHolder();
+        }
+        h.copyFrom(accRef[d - 1]);
+        fst.readAddInto(pos, fstReader, h);
+        accRef[d] = h;
+      }
     }
-    return outputLong[upto];
+    accValid = upto + 1;
+    return accRef[upto];
   }
 
-  /** Records the output of the arc taken at depth {@code upto}. */
-  private void pushOutput(FST.Arc arc) throws IOException {
-    final long pos = arc.outputPos();
-    outputPos[upto] = pos;
-    if (outputLong != null) {
-      outputLong[upto] =
-          longOutputs.addLong(outputLong[upto - 1], fst.readOutputLong(pos, fstReader));
+  /** Records the output position of the arc taken at depth {@code upto}. */
+  private void pushOutput(FST.Arc arc) {
+    outputPos[upto] = arc.outputPos();
+    if (accValid > upto) {
+      accValid = upto;
     }
   }
 
@@ -731,9 +735,8 @@ abstract class FSTEnum<T> {
     }
     if (outputPos.length <= upto) {
       outputPos = ArrayUtil.grow(outputPos, 1 + upto);
-      if (outputLong != null) {
-        outputLong = ArrayUtil.grow(outputLong, 1 + upto);
-      }
+      acc = ArrayUtil.growExact(acc, outputPos.length);
+      accRef = ArrayUtil.growExact(accRef, outputPos.length);
     }
   }
 

@@ -87,6 +87,27 @@ public abstract class Outputs<T> {
    */
   public abstract T getNoOutput();
 
+  // *** Allocation-free accumulation: mutable holders.
+
+  /** Creates a new, reusable holder for an output value, initialized to {@link #getNoOutput()}. */
+  public abstract OutputHolder<T> newHolder();
+
+  /**
+   * Decodes an output value previously written with {@link #write(Object, DataOutput)} and adds it
+   * to {@code acc} in place: {@code acc = acc + decoded}. This is the holder twin of {@code acc =
+   * add(acc, read(in))} and must agree with it; implementations append directly into the
+   * accumulator's storage, so no copy of the prefix is made.
+   */
+  public abstract void readAddInto(DataInput in, OutputHolder<T> acc) throws IOException;
+
+  /**
+   * Same as {@link #readAddInto} for an output previously written with {@link
+   * #writeFinalOutput(Object, DataOutput)}. By default this just calls {@link #readAddInto}.
+   */
+  public void readFinalOutputAddInto(DataInput in, OutputHolder<T> acc) throws IOException {
+    readAddInto(in, acc);
+  }
+
   public abstract String outputToString(T output);
 
   // TODO: maybe make valid(T output) public...?  for asserts

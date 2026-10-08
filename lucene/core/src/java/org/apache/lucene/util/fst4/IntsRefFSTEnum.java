@@ -43,14 +43,12 @@ public final class IntsRefFSTEnum<T> extends FSTEnum<T> {
       this.owner = owner;
     }
 
-    /** The current output, decoded on demand (see {@link IntsRefFSTEnum#currentOutput()}). */
-    public T output() throws IOException {
+    /**
+     * The current output, accumulated on demand into a holder owned by the enum (see {@link
+     * IntsRefFSTEnum#currentOutput()}); valid until the enum moves.
+     */
+    public OutputHolder<T> output() throws IOException {
       return owner.currentOutput();
-    }
-
-    /** The current output as a primitive long (see {@link IntsRefFSTEnum#currentOutputLong()}). */
-    public long outputLong() {
-      return owner.currentOutputLong();
     }
   }
 

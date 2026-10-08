@@ -17,6 +17,7 @@
 package org.apache.lucene.util.fst4;
 
 import java.io.IOException;
+import java.util.Comparator;
 import org.apache.lucene.store.DataInput;
 import org.apache.lucene.store.DataOutput;
 import org.apache.lucene.util.RamUsageEstimator;
@@ -26,7 +27,7 @@ import org.apache.lucene.util.RamUsageEstimator;
  *
  * @lucene.experimental
  */
-public final class PositiveIntOutputs extends Outputs<Long> implements LongOutputs {
+public final class PositiveIntOutputs extends Outputs<Long> {
 
   private static final Long NO_OUTPUT = 0L;
 
@@ -100,24 +101,53 @@ public final class PositiveIntOutputs extends Outputs<Long> implements LongOutpu
     in.readVLong();
   }
 
+  /** Holder exposing the output as a primitive {@code long} ({@code 0} is no output). */
+  public static final class LongHolder extends OutputHolder<Long> {
+    public long value;
+
+    @Override
+    public LongHolder newHolder() {
+      return new LongHolder();
+    }
+
+    @Override
+    public void setNoOutput() {
+      value = 0;
+    }
+
+    @Override
+    public boolean isNoOutput() {
+      return value == 0;
+    }
+
+    @Override
+    public void copyFrom(OutputHolder<Long> other) {
+      value = ((LongHolder) other).value;
+    }
+
+    @Override
+    public Long get() {
+      return value == 0 ? NO_OUTPUT : Long.valueOf(value);
+    }
+
+    @Override
+    public void set(Long v) {
+      value = v;
+    }
+  }
+
+  /** Orders {@link LongHolder}s by value; for {@link Util#shortestPaths}. */
+  public static final Comparator<OutputHolder<Long>> HOLDER_COMPARATOR =
+      (a, b) -> Long.compare(((LongHolder) a).value, ((LongHolder) b).value);
+
   @Override
-  public long noOutputLong() {
-    return 0;
+  public LongHolder newHolder() {
+    return new LongHolder();
   }
 
   @Override
-  public long readLong(DataInput in) throws IOException {
-    return in.readVLong();
-  }
-
-  @Override
-  public long addLong(long prefix, long output) {
-    return prefix + output;
-  }
-
-  @Override
-  public long toLong(Object boxed) {
-    return (Long) boxed;
+  public void readAddInto(DataInput in, OutputHolder<Long> acc) throws IOException {
+    ((LongHolder) acc).value += in.readVLong();
   }
 
   private boolean valid(Long o) {

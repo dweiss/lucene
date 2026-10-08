@@ -66,6 +66,65 @@ public class PairOutputs<A, B> extends Outputs<PairOutputs.Pair<A, B>> {
     }
   }
 
+  /** Holder of a pair: one holder per component. */
+  public static final class PairHolder<A, B> extends OutputHolder<Pair<A, B>> {
+    private final PairOutputs<A, B> owner;
+    public final OutputHolder<A> output1;
+    public final OutputHolder<B> output2;
+
+    PairHolder(PairOutputs<A, B> owner, OutputHolder<A> output1, OutputHolder<B> output2) {
+      this.owner = owner;
+      this.output1 = output1;
+      this.output2 = output2;
+    }
+
+    @Override
+    public PairHolder<A, B> newHolder() {
+      return new PairHolder<>(owner, output1.newHolder(), output2.newHolder());
+    }
+
+    @Override
+    public void setNoOutput() {
+      output1.setNoOutput();
+      output2.setNoOutput();
+    }
+
+    @Override
+    public boolean isNoOutput() {
+      return output1.isNoOutput() && output2.isNoOutput();
+    }
+
+    @Override
+    public void copyFrom(OutputHolder<Pair<A, B>> other) {
+      PairHolder<A, B> o = (PairHolder<A, B>) other;
+      output1.copyFrom(o.output1);
+      output2.copyFrom(o.output2);
+    }
+
+    @Override
+    public Pair<A, B> get() {
+      return owner.newPair(output1.get(), output2.get());
+    }
+
+    @Override
+    public void set(Pair<A, B> value) {
+      output1.set(value.output1);
+      output2.set(value.output2);
+    }
+  }
+
+  @Override
+  public PairHolder<A, B> newHolder() {
+    return new PairHolder<>(this, outputs1.newHolder(), outputs2.newHolder());
+  }
+
+  @Override
+  public void readAddInto(DataInput in, OutputHolder<Pair<A, B>> acc) throws IOException {
+    PairHolder<A, B> a = (PairHolder<A, B>) acc;
+    outputs1.readAddInto(in, a.output1);
+    outputs2.readAddInto(in, a.output2);
+  }
+
   public PairOutputs(Outputs<A> outputs1, Outputs<B> outputs2) {
     this.outputs1 = outputs1;
     this.outputs2 = outputs2;

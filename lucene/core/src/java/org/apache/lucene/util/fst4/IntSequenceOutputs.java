@@ -21,6 +21,7 @@ import java.util.Arrays;
 import org.apache.lucene.store.DataInput;
 import org.apache.lucene.store.DataOutput;
 import org.apache.lucene.util.IntsRef;
+import org.apache.lucene.util.IntsRefBuilder;
 import org.apache.lucene.util.RamUsageEstimator;
 
 /**
@@ -129,6 +130,62 @@ public final class IntSequenceOutputs extends Outputs<IntsRef> {
       output.length = len;
       return output;
     }
+  }
+
+  /**
+   * Holder backed by a reusable {@link IntsRefBuilder}; {@link Outputs#readAddInto} appends in
+   * place.
+   */
+  public static final class IntsHolder extends OutputHolder<IntsRef> {
+    public final IntsRefBuilder ints = new IntsRefBuilder();
+
+    @Override
+    public IntsHolder newHolder() {
+      return new IntsHolder();
+    }
+
+    @Override
+    public void setNoOutput() {
+      ints.clear();
+    }
+
+    @Override
+    public boolean isNoOutput() {
+      return ints.length() == 0;
+    }
+
+    @Override
+    public void copyFrom(OutputHolder<IntsRef> other) {
+      ints.copyInts(((IntsHolder) other).ints.get());
+    }
+
+    @Override
+    public IntsRef get() {
+      return ints.length() == 0 ? NO_OUTPUT : ints.toIntsRef();
+    }
+
+    @Override
+    public void set(IntsRef value) {
+      ints.copyInts(value);
+    }
+  }
+
+  @Override
+  public IntsHolder newHolder() {
+    return new IntsHolder();
+  }
+
+  @Override
+  public void readAddInto(DataInput in, OutputHolder<IntsRef> acc) throws IOException {
+    final IntsRefBuilder b = ((IntsHolder) acc).ints;
+    final int len = in.readVInt();
+    final int cur = b.length();
+    b.grow(cur + len);
+    final int[] arr = b.ints();
+    for (int idx = 0; idx < len; idx++) {
+      arr[cur + idx] = in.readVInt();
+    }
+    b.setLength(cur + len);
   }
 
   @Override

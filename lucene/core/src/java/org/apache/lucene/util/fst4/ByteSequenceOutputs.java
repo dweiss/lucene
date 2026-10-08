@@ -21,6 +21,7 @@ import java.util.Arrays;
 import org.apache.lucene.store.DataInput;
 import org.apache.lucene.store.DataOutput;
 import org.apache.lucene.util.BytesRef;
+import org.apache.lucene.util.BytesRefBuilder;
 import org.apache.lucene.util.RamUsageEstimator;
 import org.apache.lucene.util.StringHelper;
 
@@ -129,6 +130,59 @@ public final class ByteSequenceOutputs extends Outputs<BytesRef> {
       output.length = len;
       return output;
     }
+  }
+
+  /**
+   * Holder backed by a reusable {@link BytesRefBuilder}; {@link Outputs#readAddInto} appends in
+   * place.
+   */
+  public static final class BytesHolder extends OutputHolder<BytesRef> {
+    public final BytesRefBuilder bytes = new BytesRefBuilder();
+
+    @Override
+    public BytesHolder newHolder() {
+      return new BytesHolder();
+    }
+
+    @Override
+    public void setNoOutput() {
+      bytes.clear();
+    }
+
+    @Override
+    public boolean isNoOutput() {
+      return bytes.length() == 0;
+    }
+
+    @Override
+    public void copyFrom(OutputHolder<BytesRef> other) {
+      bytes.copyBytes(((BytesHolder) other).bytes.get());
+    }
+
+    @Override
+    public BytesRef get() {
+      return bytes.length() == 0 ? NO_OUTPUT : bytes.toBytesRef();
+    }
+
+    @Override
+    public void set(BytesRef value) {
+      bytes.copyBytes(value);
+    }
+  }
+
+  @Override
+  public BytesHolder newHolder() {
+    return new BytesHolder();
+  }
+
+  @Override
+  public void readAddInto(DataInput in, OutputHolder<BytesRef> acc) throws IOException {
+    final BytesRefBuilder b = ((BytesHolder) acc).bytes;
+    final int len = in.readVInt();
+    final int cur = b.length();
+    b.grow(cur + len);
+    in.readBytes(b.bytes(), cur, len);
+    b.setLength(cur + len);
   }
 
   @Override

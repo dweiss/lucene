@@ -61,8 +61,8 @@ import org.apache.lucene.util.RamUsageEstimator;
  *
  * <p>Unlike {@link org.apache.lucene.util.fst.FST}, this experimental variant never decodes arc
  * outputs while traversing: {@link Arc} only records the byte position of each output and the value
- * is produced on demand through {@link #readOutput}, {@link #fold} or their primitive {@code long}
- * twins (see {@link LongOutputs}).
+ * is produced on demand, either boxed ({@link #readOutput}) or accumulated into a reusable {@link
+ * OutputHolder} ({@link #readAddInto}, {@link #foldInto}) without allocation.
  *
  * @lucene.experimental
  */
@@ -166,9 +166,6 @@ public final class FST<T> implements Accountable {
   private final FSTReader fstReader;
 
   public final Outputs<T> outputs;
-
-  /** Non-null iff {@link #outputs} implements {@link LongOutputs}. */
-  private final LongOutputs longOutputs;
 
   /**
    * Represents a single arc. The arc does not hold decoded output values, only the positions of the
@@ -311,7 +308,7 @@ public final class FST<T> implements Accountable {
     /**
      * Position of this arc's output in the FST bytes, {@link #NO_OUTPUT_POS} if the arc has no
      * output, or {@link #EMPTY_OUTPUT_POS} for the empty-string output. Decode it with {@link
-     * FST#readOutput} or {@link FST#readOutputLong}.
+     * FST#readOutput} or {@link FST#readAddInto}.
      */
     public long outputPos() {
       return outputPos;
@@ -333,7 +330,7 @@ public final class FST<T> implements Accountable {
 
     /**
      * Position of the final output of this arc's target node, or {@link #NO_OUTPUT_POS}. Decode it
-     * with {@link FST#readOutput} or {@link FST#readOutputLong}.
+     * with {@link FST#readOutput} or {@link FST#readAddInto}.
      */
     public long nextFinalOutputPos() {
       return nextFinalOutputPos;
@@ -476,21 +473,7 @@ public final class FST<T> implements Accountable {
     assert fstReader != null;
     this.metadata = Objects.requireNonNull(metadata, "FSTMetadata cannot be null");
     this.outputs = metadata.outputs;
-    this.longOutputs = outputs instanceof LongOutputs lo ? lo : null;
     this.fstReader = fstReader;
-  }
-
-  /** True iff {@link #outputs} implements {@link LongOutputs} and the primitive API can be used. */
-  public boolean hasLongOutputs() {
-    return longOutputs != null;
-  }
-
-  private LongOutputs longOutputs() {
-    if (longOutputs == null) {
-      throw new IllegalStateException(
-          outputs + " does not implement " + LongOutputs.class.getName());
-    }
-    return longOutputs;
   }
 
   /**
@@ -512,22 +495,32 @@ public final class FST<T> implements Accountable {
   }
 
   /**
-   * Primitive twin of {@link #readOutput}; requires {@link #hasLongOutputs()}.
-   *
-   * @throws IllegalStateException if the outputs do not implement {@link LongOutputs}
+   * Decodes the output at {@code pos} and adds it to {@code acc} in place ({@code acc = acc +
+   * output}), without allocating. {@link #NO_OUTPUT_POS} is a no-op. The reader's position is saved
+   * and restored.
    */
-  public long readOutputLong(long pos, BytesReader in) throws IOException {
-    final LongOutputs lo = longOutputs();
+  public void readAddInto(long pos, BytesReader in, OutputHolder<T> acc) throws IOException {
     if (pos == NO_OUTPUT_POS) {
-      return lo.noOutputLong();
+      return;
     } else if (pos == EMPTY_OUTPUT_POS) {
-      return lo.toLong(metadata.emptyOutput);
+      // The empty-string output lives in the metadata, not in the bytes; rare path, boxes once.
+      acc.set(outputs.add(acc.get(), metadata.emptyOutput));
+      return;
     }
     final long saved = in.getPosition();
     in.setPosition(pos & POS_MASK);
-    final long v = (pos & FINAL_ENCODED_FLAG) != 0 ? lo.readFinalOutputLong(in) : lo.readLong(in);
+    if ((pos & FINAL_ENCODED_FLAG) != 0) {
+      outputs.readFinalOutputAddInto(in, acc);
+    } else {
+      outputs.readAddInto(in, acc);
+    }
     in.setPosition(saved);
-    return v;
+  }
+
+  /** Decodes the output at {@code pos} into {@code dest}, replacing its previous value. */
+  public void readOutputInto(long pos, BytesReader in, OutputHolder<T> dest) throws IOException {
+    dest.setNoOutput();
+    readAddInto(pos, in, dest);
   }
 
   /** Decodes {@code arc}'s output: {@code readOutput(arc.outputPos(), in)}. */
@@ -543,42 +536,16 @@ public final class FST<T> implements Accountable {
     return readOutput(arc.nextFinalOutputPos, in);
   }
 
-  /** Primitive twin of {@link #output(Arc, BytesReader)}. */
-  public long outputLong(Arc arc, BytesReader in) throws IOException {
-    return readOutputLong(arc.outputPos, in);
-  }
-
-  /** Primitive twin of {@link #nextFinalOutput(Arc, BytesReader)}. */
-  public long nextFinalOutputLong(Arc arc, BytesReader in) throws IOException {
-    return readOutputLong(arc.nextFinalOutputPos, in);
-  }
-
   /**
-   * Folds the outputs at {@code positions[0..n)} left to right with {@link Outputs#add}, skipping
-   * {@link #NO_OUTPUT_POS} entries. Allocates at most what {@link Outputs#add} allocates.
+   * Folds the outputs at {@code positions[0..n)} left to right into {@code dest} (replacing its
+   * previous value), skipping {@link #NO_OUTPUT_POS} entries. Does not allocate.
    */
-  public T fold(long[] positions, int n, BytesReader in) throws IOException {
-    T acc = outputs.getNoOutput();
+  public void foldInto(long[] positions, int n, BytesReader in, OutputHolder<T> dest)
+      throws IOException {
+    dest.setNoOutput();
     for (int i = 0; i < n; i++) {
-      final long pos = positions[i];
-      if (pos != NO_OUTPUT_POS) {
-        acc = outputs.add(acc, readOutput(pos, in));
-      }
+      readAddInto(positions[i], in, dest);
     }
-    return acc;
-  }
-
-  /** Primitive twin of {@link #fold}; requires {@link #hasLongOutputs()}. Does not allocate. */
-  public long foldLong(long[] positions, int n, BytesReader in) throws IOException {
-    final LongOutputs lo = longOutputs();
-    long acc = lo.noOutputLong();
-    for (int i = 0; i < n; i++) {
-      final long pos = positions[i];
-      if (pos != NO_OUTPUT_POS) {
-        acc = lo.addLong(acc, readOutputLong(pos, in));
-      }
-    }
-    return acc;
   }
 
   /**

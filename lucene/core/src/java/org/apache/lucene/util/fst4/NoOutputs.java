@@ -45,6 +45,43 @@ public final class NoOutputs extends Outputs<Object> {
 
   private NoOutputs() {}
 
+  /** The (stateless) holder of {@link NoOutputs}. */
+  public static final class NoHolder extends OutputHolder<Object> {
+    @Override
+    public NoHolder newHolder() {
+      return new NoHolder();
+    }
+
+    @Override
+    public void setNoOutput() {}
+
+    @Override
+    public boolean isNoOutput() {
+      return true;
+    }
+
+    @Override
+    public void copyFrom(OutputHolder<Object> other) {}
+
+    @Override
+    public Object get() {
+      return NO_OUTPUT;
+    }
+
+    @Override
+    public void set(Object value) {
+      assert value == NO_OUTPUT;
+    }
+  }
+
+  @Override
+  public NoHolder newHolder() {
+    return new NoHolder();
+  }
+
+  @Override
+  public void readAddInto(DataInput in, OutputHolder<Object> acc) {}
+
   public static NoOutputs getSingleton() {
     return singleton;
   }

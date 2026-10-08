@@ -21,6 +21,7 @@ import java.util.Arrays;
 import org.apache.lucene.store.DataInput;
 import org.apache.lucene.store.DataOutput;
 import org.apache.lucene.util.CharsRef;
+import org.apache.lucene.util.CharsRefBuilder;
 import org.apache.lucene.util.RamUsageEstimator;
 
 /**
@@ -130,6 +131,62 @@ public final class CharSequenceOutputs extends Outputs<CharsRef> {
       output.length = len;
       return output;
     }
+  }
+
+  /**
+   * Holder backed by a reusable {@link CharsRefBuilder}; {@link Outputs#readAddInto} appends in
+   * place.
+   */
+  public static final class CharsHolder extends OutputHolder<CharsRef> {
+    public final CharsRefBuilder chars = new CharsRefBuilder();
+
+    @Override
+    public CharsHolder newHolder() {
+      return new CharsHolder();
+    }
+
+    @Override
+    public void setNoOutput() {
+      chars.clear();
+    }
+
+    @Override
+    public boolean isNoOutput() {
+      return chars.length() == 0;
+    }
+
+    @Override
+    public void copyFrom(OutputHolder<CharsRef> other) {
+      chars.copyChars(((CharsHolder) other).chars.get());
+    }
+
+    @Override
+    public CharsRef get() {
+      return chars.length() == 0 ? NO_OUTPUT : chars.toCharsRef();
+    }
+
+    @Override
+    public void set(CharsRef value) {
+      chars.copyChars(value);
+    }
+  }
+
+  @Override
+  public CharsHolder newHolder() {
+    return new CharsHolder();
+  }
+
+  @Override
+  public void readAddInto(DataInput in, OutputHolder<CharsRef> acc) throws IOException {
+    final CharsRefBuilder b = ((CharsHolder) acc).chars;
+    final int len = in.readVInt();
+    final int cur = b.length();
+    b.grow(cur + len);
+    final char[] arr = b.chars();
+    for (int idx = 0; idx < len; idx++) {
+      arr[cur + idx] = (char) in.readVInt();
+    }
+    b.setLength(cur + len);
   }
 
   @Override

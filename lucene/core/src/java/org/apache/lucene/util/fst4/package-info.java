@@ -16,71 +16,52 @@
  */
 
 /**
- * Experimental finite state transducers with lazy, position-based outputs.
+ * Experimental finite state transducers: lazy, position-based outputs accumulated into reusable
+ * holders (the "hybrid" of the {@code fst2} and {@code fst3} experiments).
  *
  * <p>This package is a copy of {@link org.apache.lucene.util.fst} with one change to the traversal
- * API: {@link org.apache.lucene.util.fst4.FST.Arc} is not generic and does not hold decoded output
- * values. Instead it records the byte position of the arc's output ({@link
+ * API. {@link org.apache.lucene.util.fst4.FST.Arc} is not generic and never holds decoded values:
+ * it records the byte position of the arc's output ({@link
  * org.apache.lucene.util.fst4.FST.Arc#outputPos()}) and of the target node's final output ({@link
- * org.apache.lucene.util.fst4.FST.Arc#nextFinalOutputPos()}) inside the FST bytes. Traversal is
- * therefore allocation free and output-type agnostic; a value is produced only when the caller asks
- * for it, either boxed ({@link org.apache.lucene.util.fst4.FST#readOutput}, {@link
- * org.apache.lucene.util.fst4.FST#fold}) or as a primitive {@code long} ({@link
- * org.apache.lucene.util.fst4.FST#readOutputLong}, {@link
- * org.apache.lucene.util.fst4.FST#foldLong}) when the {@link org.apache.lucene.util.fst4.Outputs}
- * implementation also implements {@link org.apache.lucene.util.fst4.LongOutputs}.
+ * org.apache.lucene.util.fst4.FST.Arc#nextFinalOutputPos()}), so traversal is allocation free and
+ * output-type agnostic, and membership tests or misses never decode anything. When a value is
+ * needed it is accumulated into a mutable, reusable {@link
+ * org.apache.lucene.util.fst4.OutputHolder} through {@link
+ * org.apache.lucene.util.fst4.FST#readAddInto} (decode at a position and add in place) or {@link
+ * org.apache.lucene.util.fst4.FST#foldInto}; no boxed {@code add} and no copy of the prefix is
+ * involved, because {@link org.apache.lucene.util.fst4.Outputs#readAddInto} appends directly into
+ * the accumulator. {@link org.apache.lucene.util.fst4.FST#readOutput} still returns boxed values
+ * for convenience.
  *
- * <p>The enumerators expose the current output through {@link
- * org.apache.lucene.util.fst4.BytesRefFSTEnum#currentOutput()} and {@link
- * org.apache.lucene.util.fst4.BytesRefFSTEnum#currentOutputLong()}; {@link
- * org.apache.lucene.util.fst4.Util} gains {@link org.apache.lucene.util.fst4.Util#getLong}, {@link
- * org.apache.lucene.util.fst4.Util#contains} and {@link
- * org.apache.lucene.util.fst4.Util#shortestPathsLong}.
+ * <p>The enumerators keep positions per depth and a lazily filled cumulative stack of holders
+ * ({@link org.apache.lucene.util.fst4.BytesRefFSTEnum#currentOutput()}): only the depths that
+ * changed since the last call are recomputed, and depths whose arc carries no output alias their
+ * parent's holder. {@link org.apache.lucene.util.fst4.Util#get(FST,
+ * org.apache.lucene.util.BytesRef, OutputHolder)} fills a caller-supplied holder, {@link
+ * org.apache.lucene.util.fst4.Util#contains} decodes nothing, and {@link
+ * org.apache.lucene.util.fst4.Util.TopNSearcher} compares and accumulates holders.
  *
  * <p>Construction ({@link org.apache.lucene.util.fst4.FSTCompiler}) is deliberately unchanged and
  * still works on boxed values; the serialized format is identical to that of {@link
- * org.apache.lucene.util.fst.FST}, so FSTs can be exchanged between the two packages.
+ * org.apache.lucene.util.fst.FST}.
  *
- * <p>TODO (Design 2): define the outputs algebra over encodings (byte slices) rather than decoded
- * values, so that construction and {@link org.apache.lucene.util.fst4.FSTSuffixNodeCache} stop
- * boxing as well.
- *
- * <p>FST Construction example:
+ * <p>Retrieval by key, boxed or into a reusable holder:
  *
  * <pre><code class="language-java">
- *     // Input values (keys). These must be provided to Builder in Unicode code point (UTF8 or UTF32) sorted order.
- *     // Note that sorting by Java's String.compareTo, which is UTF16 sorted order, is not correct and can lead to
- *     // exceptions while building the FST:
- *     String inputValues[] = {"cat", "dog", "dogs"};
- *     long outputValues[] = {5, 7, 12};
- *
- *     PositiveIntOutputs outputs = PositiveIntOutputs.getSingleton();
- *     FSTCompiler&lt;Long&gt; fstCompiler = new FSTCompiler&lt;Long&gt;(INPUT_TYPE.BYTE1, outputs);
- *     BytesRefBuilder scratchBytes = new BytesRefBuilder();
- *     IntsRefBuilder scratchInts = new IntsRefBuilder();
- *     for (int i = 0; i &lt; inputValues.length; i++) {
- *       scratchBytes.copyChars(inputValues[i]);
- *       fstCompiler.add(Util.toIntsRef(scratchBytes.toBytesRef(), scratchInts), outputValues[i]);
+ *     Long value = Util.get(fst, new BytesRef("dog"));           // 7, boxed
+ *     PositiveIntOutputs.LongHolder holder = outputs.newHolder();
+ *     if (Util.get(fst, new BytesRef("dog"), holder)) {
+ *       System.out.println(holder.value);                          // 7, no allocation
  *     }
- *     FST&lt;Long&gt; fst = FST.fromFSTReader(fstCompiler.compile(), fstCompiler.getFSTReader());
- * </code></pre>
- *
- * Retrieval by key, boxed or primitive:
- *
- * <pre><code class="language-java">
- *     Long value = Util.get(fst, new BytesRef("dog"));
- *     System.out.println(value); // 7
- *     long v = Util.getLong(fst, new BytesRef("dog"), -1);
- *     System.out.println(v); // 7
  * </code></pre>
  *
  * Iterate over key-value pairs in sorted order:
  *
  * <pre><code class="language-java">
- *     BytesRefFSTEnum&lt;Long&gt; iterator = new BytesRefFSTEnum&lt;Long&gt;(fst);
+ *     BytesRefFSTEnum&lt;Long&gt; iterator = new BytesRefFSTEnum&lt;&gt;(fst);
  *     while (iterator.next() != null) {
  *       System.out.println(iterator.current().input.utf8ToString());
- *       System.out.println(iterator.currentOutputLong());
+ *       System.out.println(((PositiveIntOutputs.LongHolder) iterator.currentOutput()).value);
  *     }
  * </code></pre>
  *
@@ -88,9 +69,8 @@
  *
  * <pre><code class="language-java">
  *     Arc firstArc = fst.getFirstArc(new Arc());
- *     Util.LongTopResults paths = Util.shortestPathsLong(fst, firstArc, 0, 3, true);
- *     System.out.println(Util.toBytesRef(paths.topN().get(0).input(), scratchBytes).utf8ToString()); // cat
- *     System.out.println(paths.topN().get(0).output()); // 5
+ *     Util.TopResults&lt;Long&gt; paths =
+ *         Util.shortestPaths(fst, firstArc, outputs.newHolder(), PositiveIntOutputs.HOLDER_COMPARATOR, 3, true);
  * </code></pre>
  *
  * @lucene.experimental

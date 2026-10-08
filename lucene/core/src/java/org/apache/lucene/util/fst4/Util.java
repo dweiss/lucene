@@ -45,34 +45,37 @@ public final class Util {
 
   /** Looks up the output for this input, or null if the input is not accepted. */
   public static <T> T get(FST<T> fst, IntsRef input) throws IOException {
-    return get(fst, input, new long[input.length + 1]);
+    OutputHolder<T> result = fst.outputs.newHolder();
+    return get(fst, input, result) ? result.get() : null;
   }
 
   /**
-   * Looks up the output for this input, or null if the input is not accepted. The output positions
-   * along the path are collected into {@code scratch} (which must have at least {@code input.length
-   * + 1} entries) and folded once at the end; nothing is decoded on a miss.
+   * Looks up the output for this input into {@code result}; returns false (and leaves {@code
+   * result} unspecified) if the input is not accepted. Outputs are decoded and accumulated into
+   * {@code result} as the walk proceeds; arcs without outputs cost nothing. Allocates only an
+   * {@link FST.Arc} and a reader.
    */
-  public static <T> T get(FST<T> fst, IntsRef input, long[] scratch) throws IOException {
+  public static <T> boolean get(FST<T> fst, IntsRef input, OutputHolder<T> result)
+      throws IOException {
 
     // TODO: would be nice not to alloc this on every lookup
     final FST.Arc arc = fst.getFirstArc(new FST.Arc());
 
     final BytesReader fstReader = fst.getBytesReader();
 
-    // Collect output positions as we go
+    result.setNoOutput();
     for (int i = 0; i < input.length; i++) {
       if (fst.findTargetArc(input.ints[input.offset + i], arc, arc, fstReader) == null) {
-        return null;
+        return false;
       }
-      scratch[i] = arc.outputPos();
+      fst.readAddInto(arc.outputPos(), fstReader, result);
     }
 
     if (arc.isFinal()) {
-      scratch[input.length] = arc.nextFinalOutputPos();
-      return fst.fold(scratch, input.length + 1, fstReader);
+      fst.readAddInto(arc.nextFinalOutputPos(), fstReader, result);
+      return true;
     } else {
-      return null;
+      return false;
     }
   }
 
@@ -80,14 +83,13 @@ public final class Util {
 
   /** Looks up the output for this input, or null if the input is not accepted */
   public static <T> T get(FST<T> fst, BytesRef input) throws IOException {
-    return get(fst, input, new long[input.length + 1]);
+    OutputHolder<T> result = fst.outputs.newHolder();
+    return get(fst, input, result) ? result.get() : null;
   }
 
-  /**
-   * Looks up the output for this input, or null if the input is not accepted. See {@link #get(FST,
-   * IntsRef, long[])} for the role of {@code scratch}.
-   */
-  public static <T> T get(FST<T> fst, BytesRef input, long[] scratch) throws IOException {
+  /** See {@link #get(FST, IntsRef, OutputHolder)}. */
+  public static <T> boolean get(FST<T> fst, BytesRef input, OutputHolder<T> result)
+      throws IOException {
     assert fst.metadata.inputType == FST.INPUT_TYPE.BYTE1;
 
     final BytesReader fstReader = fst.getBytesReader();
@@ -95,76 +97,19 @@ public final class Util {
     // TODO: would be nice not to alloc this on every lookup
     final FST.Arc arc = fst.getFirstArc(new FST.Arc());
 
-    // Collect output positions as we go
+    result.setNoOutput();
     for (int i = 0; i < input.length; i++) {
       if (fst.findTargetArc(input.bytes[i + input.offset] & 0xFF, arc, arc, fstReader) == null) {
-        return null;
+        return false;
       }
-      scratch[i] = arc.outputPos();
+      fst.readAddInto(arc.outputPos(), fstReader, result);
     }
 
     if (arc.isFinal()) {
-      scratch[input.length] = arc.nextFinalOutputPos();
-      return fst.fold(scratch, input.length + 1, fstReader);
+      fst.readAddInto(arc.nextFinalOutputPos(), fstReader, result);
+      return true;
     } else {
-      return null;
-    }
-  }
-
-  /**
-   * Looks up the output for this input as a primitive long, accumulating with {@link
-   * LongOutputs#addLong} along the way, or returns {@code missValue} if the input is not accepted.
-   * Does not allocate. Requires {@link FST#hasLongOutputs()}.
-   */
-  public static long getLong(FST<?> fst, IntsRef input, long missValue) throws IOException {
-    final LongOutputs longOutputs = (LongOutputs) fst.outputs;
-    final FST.Arc arc = fst.getFirstArc(new FST.Arc());
-    final BytesReader fstReader = fst.getBytesReader();
-
-    long output = longOutputs.noOutputLong();
-    for (int i = 0; i < input.length; i++) {
-      if (fst.findTargetArc(input.ints[input.offset + i], arc, arc, fstReader) == null) {
-        return missValue;
-      }
-      if (arc.hasOutput()) {
-        output = longOutputs.addLong(output, fst.outputLong(arc, fstReader));
-      }
-    }
-
-    if (arc.isFinal()) {
-      if (arc.hasNextFinalOutput()) {
-        output = longOutputs.addLong(output, fst.nextFinalOutputLong(arc, fstReader));
-      }
-      return output;
-    } else {
-      return missValue;
-    }
-  }
-
-  /** See {@link #getLong(FST, IntsRef, long)}. */
-  public static long getLong(FST<?> fst, BytesRef input, long missValue) throws IOException {
-    assert fst.metadata.inputType == FST.INPUT_TYPE.BYTE1;
-    final LongOutputs longOutputs = (LongOutputs) fst.outputs;
-    final FST.Arc arc = fst.getFirstArc(new FST.Arc());
-    final BytesReader fstReader = fst.getBytesReader();
-
-    long output = longOutputs.noOutputLong();
-    for (int i = 0; i < input.length; i++) {
-      if (fst.findTargetArc(input.bytes[i + input.offset] & 0xFF, arc, arc, fstReader) == null) {
-        return missValue;
-      }
-      if (arc.hasOutput()) {
-        output = longOutputs.addLong(output, fst.outputLong(arc, fstReader));
-      }
-    }
-
-    if (arc.isFinal()) {
-      if (arc.hasNextFinalOutput()) {
-        output = longOutputs.addLong(output, fst.nextFinalOutputLong(arc, fstReader));
-      }
-      return output;
-    } else {
-      return missValue;
+      return false;
     }
   }
 
@@ -202,8 +147,8 @@ public final class Util {
     /** Holds the last arc appended to this path */
     public FST.Arc arc;
 
-    /** Holds cost plus any usage-specific output: */
-    public T output;
+    /** Holds cost plus any usage-specific output, in a holder owned by this path. */
+    public OutputHolder<T> output;
 
     public final IntsRefBuilder input;
     public final float boost;
@@ -214,7 +159,7 @@ public final class Util {
     public int payload;
 
     FSTPath(
-        T output,
+        OutputHolder<T> output,
         FST.Arc arc,
         IntsRefBuilder input,
         float boost,
@@ -228,7 +173,7 @@ public final class Util {
       this.payload = payload;
     }
 
-    FSTPath<T> newPath(T output, IntsRefBuilder input) {
+    FSTPath<T> newPath(OutputHolder<T> output, IntsRefBuilder input) {
       return new FSTPath<>(output, this.arc, input, this.boost, this.context, this.payload);
     }
 
@@ -248,7 +193,7 @@ public final class Util {
   }
 
   /** Compares first by the provided comparator, and then tie breaks by path.input. */
-  private record TieBreakByInputComparator<T>(Comparator<T> comparator)
+  private record TieBreakByInputComparator<T>(Comparator<OutputHolder<T>> comparator)
       implements Comparator<FSTPath<T>> {
 
     @Override
@@ -271,8 +216,9 @@ public final class Util {
     private final int maxQueueDepth;
 
     private final FST.Arc scratchArc = new FST.Arc();
+    private final OutputHolder<T> scratchOutput;
 
-    private final Comparator<T> comparator;
+    private final Comparator<OutputHolder<T>> comparator;
     private final Comparator<FSTPath<T>> pathComparator;
 
     TreeSet<FSTPath<T>> queue;
@@ -283,9 +229,10 @@ public final class Util {
      * @param fst the {@link org.apache.lucene.util.fst4.FST} to search on
      * @param topN the number of top scoring entries to retrieve
      * @param maxQueueDepth the maximum size of the queue of possible top entries
-     * @param comparator the comparator to select the top N
+     * @param comparator the comparator to select the top N (compares output holders)
      */
-    public TopNSearcher(FST<T> fst, int topN, int maxQueueDepth, Comparator<T> comparator) {
+    public TopNSearcher(
+        FST<T> fst, int topN, int maxQueueDepth, Comparator<OutputHolder<T>> comparator) {
       this(fst, topN, maxQueueDepth, comparator, new TieBreakByInputComparator<>(comparator));
     }
 
@@ -293,9 +240,10 @@ public final class Util {
         FST<T> fst,
         int topN,
         int maxQueueDepth,
-        Comparator<T> comparator,
+        Comparator<OutputHolder<T>> comparator,
         Comparator<FSTPath<T>> pathComparator) {
       this.fst = fst;
+      this.scratchOutput = fst.outputs.newHolder();
       this.bytesReader = fst.getBytesReader();
       this.topN = topN;
       this.maxQueueDepth = maxQueueDepth;
@@ -308,8 +256,6 @@ public final class Util {
     protected void addIfCompetitive(FSTPath<T> path) throws IOException {
 
       assert queue != null;
-
-      T output = fst.outputs.add(path.output, fst.output(path.arc, bytesReader));
 
       if (queue.size() == maxQueueDepth) {
         FSTPath<T> bottom = queue.last();
@@ -341,6 +287,9 @@ public final class Util {
       newInput.copyInts(path.input.get());
       newInput.append(path.arc.label());
 
+      OutputHolder<T> output = path.output.newHolder();
+      output.copyFrom(path.output);
+      fst.readAddInto(path.arc.outputPos(), bytesReader, output);
       FSTPath<T> newPath = path.newPath(output, newInput);
       if (acceptPartialPath(newPath)) {
         queue.add(newPath);
@@ -351,7 +300,7 @@ public final class Util {
     }
 
     public void addStartPaths(
-        FST.Arc node, T startOutput, boolean allowEmptyString, IntsRefBuilder input)
+        FST.Arc node, OutputHolder<T> startOutput, boolean allowEmptyString, IntsRefBuilder input)
         throws IOException {
       addStartPaths(node, startOutput, allowEmptyString, input, 0, null, -1);
     }
@@ -362,7 +311,7 @@ public final class Util {
      */
     public void addStartPaths(
         FST.Arc node,
-        T startOutput,
+        OutputHolder<T> startOutput,
         boolean allowEmptyString,
         IntsRefBuilder input,
         float boost,
@@ -370,12 +319,10 @@ public final class Util {
         int payload)
         throws IOException {
 
-      // De-dup NO_OUTPUT since it must be a singleton:
-      if (startOutput.equals(fst.outputs.getNoOutput())) {
-        startOutput = fst.outputs.getNoOutput();
-      }
-
-      FSTPath<T> path = new FSTPath<>(startOutput, node, input, boost, context, payload);
+      // The path owns (and mutates) its output, so copy the caller's holder:
+      OutputHolder<T> pathOutput = startOutput.newHolder();
+      pathOutput.copyFrom(startOutput);
+      FSTPath<T> path = new FSTPath<>(pathOutput, node, input, boost, context, payload);
       fst.readFirstTargetArc(node, path.arc, bytesReader);
 
       // Bootstrap: find the min starting arc
@@ -395,7 +342,7 @@ public final class Util {
       final List<Result<T>> results = new ArrayList<>();
 
       final BytesReader fstReader = fst.getBytesReader();
-      final T NO_OUTPUT = fst.outputs.getNoOutput();
+      final OutputHolder<T> NO_OUTPUT = fst.outputs.newHolder();
 
       // TODO: we could enable FST to sorting arcs by weight
       // as it freezes... can easily do this on first pass
@@ -432,7 +379,7 @@ public final class Util {
         if (path.arc.label() == FST.END_LABEL) {
           // Empty string!
           path.input.setLength(path.input.length() - 1);
-          results.add(new Result<>(path.input.get(), path.output));
+          results.add(new Result<>(path.input.get(), path.output.get()));
           continue;
         }
 
@@ -458,7 +405,8 @@ public final class Util {
           while (true) {
             // tricky: instead of comparing output == 0, we must
             // express it via the comparator compare(output, 0) == 0
-            if (comparator.compare(NO_OUTPUT, fst.output(path.arc, fstReader)) == 0) {
+            if (path.arc.hasOutput() == false
+                || comparator.compare(NO_OUTPUT, decode(path.arc, fstReader)) == 0) {
               if (queue == null) {
                 foundZero = true;
                 break;
@@ -489,16 +437,16 @@ public final class Util {
 
           if (path.arc.label() == FST.END_LABEL) {
             // Add final output:
-            path.output = fst.outputs.add(path.output, fst.output(path.arc, fstReader));
+            fst.readAddInto(path.arc.outputPos(), fstReader, path.output);
             if (acceptResult(path)) {
-              results.add(new Result<>(path.input.get(), path.output));
+              results.add(new Result<>(path.input.get(), path.output.get()));
             } else {
               rejectCount++;
             }
             break;
           } else {
             path.input.append(path.arc.label());
-            path.output = fst.outputs.add(path.output, fst.output(path.arc, fstReader));
+            fst.readAddInto(path.arc.outputPos(), fstReader, path.output);
             if (acceptPartialPath(path) == false) {
               break;
             }
@@ -517,8 +465,14 @@ public final class Util {
       return true;
     }
 
-    protected boolean acceptResult(IntsRef input, T output) {
+    protected boolean acceptResult(IntsRef input, OutputHolder<T> output) {
       return true;
+    }
+
+    /** Decodes the arc's output into the searcher's scratch holder. */
+    private OutputHolder<T> decode(FST.Arc arc, BytesReader in) throws IOException {
+      fst.readOutputInto(arc.outputPos(), in, scratchOutput);
+      return scratchOutput;
     }
   }
 
@@ -526,308 +480,6 @@ public final class Util {
    * Holds a single input (IntsRef) + output, returned by {@link #shortestPaths shortestPaths()}.
    */
   public record Result<T>(IntsRef input, T output) {}
-
-  /**
-   * Represents a path in {@link LongTopNSearcher}; the primitive twin of {@link FSTPath}.
-   *
-   * @lucene.experimental
-   */
-  public static final class LongFSTPath {
-    /** Holds the last arc appended to this path */
-    public final FST.Arc arc;
-
-    /** Holds the accumulated cost. */
-    public long output;
-
-    public final IntsRefBuilder input;
-
-    LongFSTPath(long output, FST.Arc arc, IntsRefBuilder input) {
-      this.arc = new FST.Arc().copyFrom(arc);
-      this.output = output;
-      this.input = input;
-    }
-
-    LongFSTPath newPath(long output, IntsRefBuilder input) {
-      return new LongFSTPath(output, this.arc, input);
-    }
-
-    @Override
-    public String toString() {
-      return "input=" + input.get() + " output=" + output;
-    }
-  }
-
-  /** Orders paths by output (ascending), tie breaking by input. */
-  private static final Comparator<LongFSTPath> LONG_PATH_COMPARATOR =
-      (a, b) -> {
-        int cmp = Long.compare(a.output, b.output);
-        if (cmp == 0) {
-          return a.input.get().compareTo(b.input.get());
-        } else {
-          return cmp;
-        }
-      };
-
-  /**
-   * Primitive twin of {@link TopNSearcher} for FSTs whose outputs implement {@link LongOutputs}:
-   * finds the top N paths with the smallest accumulated output. Paths are ordered by {@link
-   * Long#compare}; no comparator can be supplied.
-   */
-  public static class LongTopNSearcher {
-
-    private final FST<?> fst;
-    private final LongOutputs longOutputs;
-    private final BytesReader bytesReader;
-    private final int topN;
-    private final int maxQueueDepth;
-
-    private final FST.Arc scratchArc = new FST.Arc();
-
-    TreeSet<LongFSTPath> queue;
-
-    /**
-     * Creates an unbounded LongTopNSearcher
-     *
-     * @param fst the {@link FST} to search on; must satisfy {@link FST#hasLongOutputs()}
-     * @param topN the number of top scoring entries to retrieve
-     * @param maxQueueDepth the maximum size of the queue of possible top entries
-     */
-    public LongTopNSearcher(FST<?> fst, int topN, int maxQueueDepth) {
-      if (fst.hasLongOutputs() == false) {
-        throw new IllegalArgumentException(fst.outputs + " does not implement LongOutputs");
-      }
-      this.fst = fst;
-      this.longOutputs = (LongOutputs) fst.outputs;
-      this.bytesReader = fst.getBytesReader();
-      this.topN = topN;
-      this.maxQueueDepth = maxQueueDepth;
-      queue = new TreeSet<>(LONG_PATH_COMPARATOR);
-    }
-
-    // If back plus this arc is competitive then add to queue:
-    protected void addIfCompetitive(LongFSTPath path) throws IOException {
-
-      assert queue != null;
-
-      long output = longOutputs.addLong(path.output, fst.outputLong(path.arc, bytesReader));
-
-      if (queue.size() == maxQueueDepth) {
-        LongFSTPath bottom = queue.last();
-        int comp = Long.compare(output, bottom.output);
-        if (comp > 0) {
-          // Doesn't compete
-          return;
-        } else if (comp == 0) {
-          // Tie break by alpha sort on the input:
-          path.input.append(path.arc.label());
-          final int cmp = bottom.input.get().compareTo(path.input.get());
-          path.input.setLength(path.input.length() - 1);
-
-          // We should never see dups:
-          assert cmp != 0;
-
-          if (cmp < 0) {
-            // Doesn't compete
-            return;
-          }
-        }
-        // Competes
-      }
-      // else ... Queue isn't full yet, so any path we hit competes:
-
-      // copy over the current input to the new input
-      // and add the arc.label to the end
-      IntsRefBuilder newInput = new IntsRefBuilder();
-      newInput.copyInts(path.input.get());
-      newInput.append(path.arc.label());
-
-      LongFSTPath newPath = path.newPath(output, newInput);
-      if (acceptPartialPath(newPath)) {
-        queue.add(newPath);
-        if (queue.size() == maxQueueDepth + 1) {
-          queue.pollLast();
-        }
-      }
-    }
-
-    /**
-     * Adds all leaving arcs, including 'finished' arc, if the node is final, from this node into
-     * the queue.
-     */
-    public void addStartPaths(
-        FST.Arc node, long startOutput, boolean allowEmptyString, IntsRefBuilder input)
-        throws IOException {
-
-      LongFSTPath path = new LongFSTPath(startOutput, node, input);
-      fst.readFirstTargetArc(node, path.arc, bytesReader);
-
-      // Bootstrap: find the min starting arc
-      while (true) {
-        if (allowEmptyString || path.arc.label() != FST.END_LABEL) {
-          addIfCompetitive(path);
-        }
-        if (path.arc.isLast()) {
-          break;
-        }
-        fst.readNextArc(path.arc, bytesReader);
-      }
-    }
-
-    public LongTopResults search() throws IOException {
-
-      final List<LongResult> results = new ArrayList<>();
-
-      final BytesReader fstReader = fst.getBytesReader();
-      final long NO_OUTPUT = longOutputs.noOutputLong();
-
-      int rejectCount = 0;
-
-      // For each top N path:
-      while (results.size() < topN) {
-
-        LongFSTPath path;
-
-        if (queue == null) {
-          // Ran out of paths
-          break;
-        }
-
-        // Remove top path since we are now going to
-        // pursue it:
-        path = queue.pollFirst();
-
-        if (path == null) {
-          // There were less than topN paths available:
-          break;
-        }
-
-        if (acceptPartialPath(path) == false) {
-          continue;
-        }
-
-        if (path.arc.label() == FST.END_LABEL) {
-          // Empty string!
-          path.input.setLength(path.input.length() - 1);
-          results.add(new LongResult(path.input.get(), path.output));
-          continue;
-        }
-
-        if (results.size() == topN - 1 && maxQueueDepth == topN) {
-          // Last path -- don't bother w/ queue anymore:
-          queue = null;
-        }
-
-        // We take path and find its "0 output completion",
-        // ie, just keep traversing the first arc with
-        // NO_OUTPUT that we can find, since this must lead
-        // to the minimum path that completes from
-        // path.arc.
-
-        // For each input letter:
-        while (true) {
-
-          fst.readFirstTargetArc(path.arc, path.arc, fstReader);
-
-          // For each arc leaving this node:
-          boolean foundZero = false;
-          boolean arcCopyIsPending = false;
-          while (true) {
-            if (fst.outputLong(path.arc, fstReader) == NO_OUTPUT) {
-              if (queue == null) {
-                foundZero = true;
-                break;
-              } else if (!foundZero) {
-                arcCopyIsPending = true;
-                foundZero = true;
-              } else {
-                addIfCompetitive(path);
-              }
-            } else if (queue != null) {
-              addIfCompetitive(path);
-            }
-            if (path.arc.isLast()) {
-              break;
-            }
-            if (arcCopyIsPending) {
-              scratchArc.copyFrom(path.arc);
-              arcCopyIsPending = false;
-            }
-            fst.readNextArc(path.arc, fstReader);
-          }
-
-          assert foundZero;
-
-          if (queue != null && !arcCopyIsPending) {
-            path.arc.copyFrom(scratchArc);
-          }
-
-          if (path.arc.label() == FST.END_LABEL) {
-            // Add final output:
-            path.output = longOutputs.addLong(path.output, fst.outputLong(path.arc, fstReader));
-            if (acceptResult(path.input.get(), path.output)) {
-              results.add(new LongResult(path.input.get(), path.output));
-            } else {
-              rejectCount++;
-            }
-            break;
-          } else {
-            path.input.append(path.arc.label());
-            path.output = longOutputs.addLong(path.output, fst.outputLong(path.arc, fstReader));
-            if (acceptPartialPath(path) == false) {
-              break;
-            }
-          }
-        }
-      }
-      return new LongTopResults(rejectCount + topN <= maxQueueDepth, results);
-    }
-
-    /** Override this to prevent considering a path before it's complete */
-    protected boolean acceptPartialPath(LongFSTPath path) {
-      return true;
-    }
-
-    protected boolean acceptResult(IntsRef input, long output) {
-      return true;
-    }
-  }
-
-  /** Holds a single input (IntsRef) + primitive output, returned by {@link #shortestPathsLong}. */
-  public record LongResult(IntsRef input, long output) {}
-
-  /**
-   * Holds the results for a top N search using {@link LongTopNSearcher}.
-   *
-   * @param isComplete <code>true</code> iff this is a complete result ie. if the specified queue
-   *     size was large enough to find the complete list of results. This might be <code>false
-   *     </code> if the {@link LongTopNSearcher} rejected too many results.
-   * @param topN The top results
-   */
-  public record LongTopResults(boolean isComplete, List<LongResult> topN)
-      implements Iterable<LongResult> {
-    @Override
-    public Iterator<LongResult> iterator() {
-      return topN.iterator();
-    }
-  }
-
-  /**
-   * Starting from node, find the top N min cost completions to a final node; the primitive twin of
-   * {@link #shortestPaths}. Requires {@link FST#hasLongOutputs()}.
-   */
-  public static LongTopResults shortestPathsLong(
-      FST<?> fst, FST.Arc fromNode, long startOutput, int topN, boolean allowEmptyString)
-      throws IOException {
-
-    // All paths are kept, so we can pass topN for
-    // maxQueueDepth and the pruning is admissible:
-    LongTopNSearcher searcher = new LongTopNSearcher(fst, topN, topN);
-
-    // since this search is initialized with a single start node
-    // it is okay to start with an empty input path here
-    searcher.addStartPaths(fromNode, startOutput, allowEmptyString, new IntsRefBuilder());
-    return searcher.search();
-  }
 
   /** Holds the results for a top N search using {@link TopNSearcher} */
   public static final class TopResults<T> implements Iterable<Result<T>> {
@@ -857,8 +509,8 @@ public final class Util {
   public static <T> TopResults<T> shortestPaths(
       FST<T> fst,
       FST.Arc fromNode,
-      T startOutput,
-      Comparator<T> comparator,
+      OutputHolder<T> startOutput,
+      Comparator<OutputHolder<T>> comparator,
       int topN,
       boolean allowEmptyString)
       throws IOException {
