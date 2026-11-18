@@ -16,6 +16,8 @@ files:
 ignores:
   - "**/JavascriptParser.java"
   - "**/JavascriptLexer.java"
+  - "**/StandardSyntaxAntlrParser.java"
+  - "**/StandardSyntaxAntlrLexer.java"
 ---
 # yaml-language-server: $schema=https://raw.githubusercontent.com/ast-grep/ast-grep/refs/heads/main/schemas/java_rule.json
 id: ComparingThisWithNull

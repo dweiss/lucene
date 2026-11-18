@@ -26,6 +26,36 @@ The constructor `HnswGraphSearcher(NeighborQueue, BitSet)` is now
 `VisitedSet`. This interface has the `set`, `getAndSet` and `clear` methods of `BitSet`; create one
 with `VisitedSet.create(expectedVisitedNodes, graphSize)`.
 
+### StandardSyntaxParser is generated with ANTLR instead of JavaCC
+
+The syntax accepted by the flexible query parser's `StandardSyntaxParser` has not changed, but the
+parser is now implemented with ANTLR and the `lucene-queryparser` module depends on
+`antlr4-runtime` (the `org.antlr.antlr4.runtime` module).
+
+The JavaCC-generated classes in `org.apache.lucene.queryparser.flexible.standard.parser` have been
+removed: `Token`, `TokenMgrError`, `StandardSyntaxParserConstants` and
+`StandardSyntaxParserTokenManager`. `StandardSyntaxParser` only has a no-argument constructor and
+the `SyntaxParser#parse(CharSequence, CharSequence)` method now; the constructors taking a
+`CharStream` or a token manager, `ReInit`, `TopLevelQuery` and other JavaCC-specific methods are
+gone. Replace code like:
+
+```java
+StandardSyntaxParser parser = new StandardSyntaxParser(new FastCharStream(new StringReader(query)));
+QueryNode node = parser.TopLevelQuery(field);
+```
+
+with:
+
+```java
+QueryNode node = new StandardSyntaxParser().parse(query, field);
+```
+
+`StandardSyntaxParser` instances are now stateless and can be shared between threads.
+
+`ParseException` remains but no longer has the `currentToken`, `expectedTokenSequences` and
+`tokenImage` fields. All syntax errors, including those previously reported as a
+`QueryNodeParseException` wrapping a `TokenMgrError`, are now thrown as `ParseException`.
+
 ## Migration from Lucene 10.x to Lucene 11.0
 
 ### Deprecated TokenSources methods have been removed (GITHUB#16985)

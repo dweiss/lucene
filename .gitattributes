@@ -39,6 +39,9 @@ lucene/queryparser/src/java/org/apache/lucene/queryparser/**/*ParserConstants.ja
 lucene/queryparser/src/java/org/apache/lucene/queryparser/**/*ParserTokenManager.java linguist-generated
 lucene/queryparser/src/java/org/apache/lucene/queryparser/**/Token.java linguist-generated
 lucene/queryparser/src/java/org/apache/lucene/queryparser/**/TokenMgrError.java linguist-generated
+lucene/queryparser/src/java/org/apache/lucene/queryparser/flexible/standard/parser/ParseException.java -linguist-generated
+lucene/queryparser/src/java/org/apache/lucene/queryparser/flexible/standard/parser/StandardSyntaxParser.java -linguist-generated
+lucene/queryparser/src/java/org/apache/lucene/queryparser/flexible/standard/parser/StandardSyntaxAntlrLexer.java linguist-generated
 lucene/test-framework/src/java/org/apache/lucene/tests/analysis/standard/EmojiTokenizationTestUnicode_*.java  linguist-generated
 lucene/test-framework/src/java/org/apache/lucene/tests/analysis/standard/WordBreakTestUnicode_*.java  linguist-generated
 

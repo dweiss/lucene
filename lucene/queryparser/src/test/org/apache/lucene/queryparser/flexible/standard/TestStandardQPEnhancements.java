@@ -17,10 +17,8 @@
 package org.apache.lucene.queryparser.flexible.standard;
 
 import com.carrotsearch.randomizedtesting.RandomizedTest;
-import java.io.StringReader;
 import java.util.Locale;
 import org.apache.lucene.analysis.Analyzer;
-import org.apache.lucene.queryparser.charstream.FastCharStream;
 import org.apache.lucene.queryparser.flexible.core.nodes.QueryNode;
 import org.apache.lucene.queryparser.flexible.standard.config.StandardQueryConfigHandler;
 import org.apache.lucene.queryparser.flexible.standard.nodes.IntervalQueryNode;
@@ -163,8 +161,7 @@ public class TestStandardQPEnhancements extends LuceneTestCase {
 
   protected void checkIntervalQueryNode(String query) throws Exception {
     // Check raw parser first.
-    var syntaxParser = new StandardSyntaxParser(new FastCharStream(new StringReader(query)));
-    QueryNode queryNode = syntaxParser.TopLevelQuery(FLD_DEFAULT);
+    QueryNode queryNode = new StandardSyntaxParser().parse(query, FLD_DEFAULT);
     MatcherAssert.assertThat(queryNode, Matchers.instanceOf(IntervalQueryNode.class));
 
     var queryParser = getQueryParser();

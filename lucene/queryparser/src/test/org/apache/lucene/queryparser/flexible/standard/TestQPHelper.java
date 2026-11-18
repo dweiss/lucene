@@ -17,7 +17,6 @@
 package org.apache.lucene.queryparser.flexible.standard;
 
 import java.io.IOException;
-import java.io.StringReader;
 import java.text.DateFormat;
 import java.util.Calendar;
 import java.util.Date;
@@ -41,9 +40,9 @@ import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.Term;
-import org.apache.lucene.queryparser.charstream.FastCharStream;
 import org.apache.lucene.queryparser.flexible.core.QueryNodeException;
 import org.apache.lucene.queryparser.flexible.core.messages.QueryParserMessages;
+import org.apache.lucene.queryparser.flexible.core.nodes.FieldQueryNode;
 import org.apache.lucene.queryparser.flexible.core.nodes.FuzzyQueryNode;
 import org.apache.lucene.queryparser.flexible.core.nodes.QueryNode;
 import org.apache.lucene.queryparser.flexible.core.processors.QueryNodeProcessorImpl;
@@ -475,10 +474,9 @@ public class TestQPHelper extends LuceneTestCase {
         "+(title:dog title:cat) -author:\"bob dole\"");
   }
 
-  public void testParse() throws ParseException {
-    StandardSyntaxParser p = new StandardSyntaxParser(new FastCharStream(new StringReader("")));
-    p.ReInit(new FastCharStream(new StringReader("title:(dog OR cat)")));
-    System.out.println(p.TopLevelQuery("_fld_"));
+  public void testParse() throws QueryNodeException {
+    StandardSyntaxParser p = new StandardSyntaxParser();
+    System.out.println(p.parse("title:(dog OR cat)", "_fld_"));
   }
 
   public void testPunct() throws Exception {
@@ -504,6 +502,41 @@ public class TestQPHelper extends LuceneTestCase {
     assertQueryEquals("\"term\"~2", null, "term");
     assertQueryEquals("\" \"~2 germ", null, "germ");
     assertQueryEquals("\"term germ\"~2^2", null, "(\"term germ\"~2)^2.0");
+  }
+
+  public void testNumberAfterTildeIsFuzzySimilarity() throws Exception {
+    Analyzer a = new MockAnalyzer(random(), MockTokenizer.WHITESPACE, false);
+    assertQueryEquals("term~ 1 germ", a, "term~1 germ");
+    assertQueryEquals("term~ germ 1", a, "term~2 germ 1");
+
+    // The number is never the next clause's term, even if this is the only way to parse the query.
+    StandardSyntaxParser parser = new StandardSyntaxParser();
+    expectThrows(ParseException.class, () -> parser.parse("term~ 1~ germ", "field"));
+    expectThrows(ParseException.class, () -> parser.parse("term~0.8~2", "field"));
+    expectThrows(ParseException.class, () -> parser.parse("term~ 1.5 2~", "field"));
+  }
+
+  public void testSyntaxErrorDetails() throws Exception {
+    StandardSyntaxParser parser = new StandardSyntaxParser();
+
+    ParseException e = expectThrows(ParseException.class, () -> parser.parse("a AND (b", "field"));
+    assertEquals("a AND (b", e.getQuery().toString());
+    assertEquals(1, e.getBeginLine());
+    assertEquals(8, e.getBeginColumn());
+    assertEquals("<EOF>", e.getErrorToken());
+
+    // An unmatched character.
+    e = expectThrows(ParseException.class, () -> parser.parse("a b]", "field"));
+    assertEquals(1, e.getBeginLine());
+    assertEquals(3, e.getBeginColumn());
+  }
+
+  public void testOffsetsWithSurrogatePairs() throws Exception {
+    QueryNode node = new StandardSyntaxParser().parse("\uD83D\uDE00 b", "field");
+    FieldQueryNode last = (FieldQueryNode) node.getChildren().get(1);
+    assertEquals("b", last.getTextAsString());
+    assertEquals(3, last.getBegin());
+    assertEquals(4, last.getEnd());
   }
 
   public void testNumber() throws Exception {

@@ -16,8 +16,10 @@
  */
 
 /** Query parsers and parsing framework */
+@SuppressWarnings({"requires-automatic"})
 module org.apache.lucene.queryparser {
   requires java.xml;
+  requires org.antlr.antlr4.runtime;
   requires org.apache.lucene.core;
   requires org.apache.lucene.queries;
   requires org.apache.lucene.sandbox;

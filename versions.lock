@@ -11,7 +11,7 @@
       "junit:junit:4.13.2" : "fa9ef26b,refs=4",
       "net.sf.jopt-simple:jopt-simple:5.0.4" : "85a1e4c6,refs=2",
       "net.sourceforge.nekohtml:nekohtml:1.9.22" : "5ce8cdc6,refs=2",
-      "org.antlr:antlr4-runtime:4.13.2" : "d9953130,refs=4",
+      "org.antlr:antlr4-runtime:4.13.2" : "63d74d99,refs=8",
       "org.apache.commons:commons-compress:1.28.0" : "5ce8cdc6,refs=2",
       "org.apache.commons:commons-lang3:3.18.0" : "5ce8cdc6,refs=2",
       "org.apache.commons:commons-math3:3.6.1" : "85a1e4c6,refs=2",
@@ -66,7 +66,7 @@
       "net.bytebuddy:byte-buddy:1.18.3" : "39ba18cb,refs=4",
       "net.sf.jopt-simple:jopt-simple:5.0.4" : "152d9f78,refs=3",
       "net.sourceforge.nekohtml:nekohtml:1.9.22" : "6f16ff86,refs=2",
-      "org.antlr:antlr4-runtime:4.13.2" : "6fbc4021,refs=5",
+      "org.antlr:antlr4-runtime:4.13.2" : "c215cb25,refs=12",
       "org.apache.commons:commons-compress:1.28.0" : "6f16ff86,refs=2",
       "org.apache.commons:commons-lang3:3.18.0" : "6f16ff86,refs=2",
       "org.apache.commons:commons-math3:3.6.1" : "152d9f78,refs=3",
@@ -1142,6 +1142,40 @@
         "projectPath" : ":lucene:benchmark"
       }
     ],
+    "63d74d99" : [
+      {
+        "configuration" : "runtimeClasspath",
+        "projectPath" : ":lucene:benchmark"
+      },
+      {
+        "configuration" : "runtimeClasspath",
+        "projectPath" : ":lucene:benchmark-jmh"
+      },
+      {
+        "configuration" : "runtimeClasspath",
+        "projectPath" : ":lucene:demo"
+      },
+      {
+        "configuration" : "compileClasspath",
+        "projectPath" : ":lucene:expressions"
+      },
+      {
+        "configuration" : "runtimeClasspath",
+        "projectPath" : ":lucene:expressions"
+      },
+      {
+        "configuration" : "runtimeClasspath",
+        "projectPath" : ":lucene:luke"
+      },
+      {
+        "configuration" : "compileClasspath",
+        "projectPath" : ":lucene:queryparser"
+      },
+      {
+        "configuration" : "runtimeClasspath",
+        "projectPath" : ":lucene:queryparser"
+      }
+    ],
     "6f16ff86" : [
       {
         "configuration" : "testCompileClasspath",
@@ -1150,28 +1184,6 @@
       {
         "configuration" : "testRuntimeClasspath",
         "projectPath" : ":lucene:benchmark"
-      }
-    ],
-    "6fbc4021" : [
-      {
-        "configuration" : "testRuntimeClasspath",
-        "projectPath" : ":lucene:benchmark-jmh"
-      },
-      {
-        "configuration" : "testRuntimeClasspath",
-        "projectPath" : ":lucene:demo"
-      },
-      {
-        "configuration" : "testCompileClasspath",
-        "projectPath" : ":lucene:expressions"
-      },
-      {
-        "configuration" : "testRuntimeClasspath",
-        "projectPath" : ":lucene:expressions"
-      },
-      {
-        "configuration" : "testRuntimeClasspath",
-        "projectPath" : ":lucene:queries"
       }
     ],
     "79af844b" : [
@@ -2062,6 +2074,56 @@
         "projectPath" : ":lucene:test-framework"
       }
     ],
+    "c215cb25" : [
+      {
+        "configuration" : "testRuntimeClasspath",
+        "projectPath" : ":lucene:benchmark"
+      },
+      {
+        "configuration" : "testRuntimeClasspath",
+        "projectPath" : ":lucene:benchmark-jmh"
+      },
+      {
+        "configuration" : "testRuntimeClasspath",
+        "projectPath" : ":lucene:demo"
+      },
+      {
+        "configuration" : "testCompileClasspath",
+        "projectPath" : ":lucene:expressions"
+      },
+      {
+        "configuration" : "testRuntimeClasspath",
+        "projectPath" : ":lucene:expressions"
+      },
+      {
+        "configuration" : "testRuntimeClasspath",
+        "projectPath" : ":lucene:highlighter"
+      },
+      {
+        "configuration" : "testRuntimeClasspath",
+        "projectPath" : ":lucene:luke"
+      },
+      {
+        "configuration" : "testRuntimeClasspath",
+        "projectPath" : ":lucene:memory"
+      },
+      {
+        "configuration" : "testRuntimeClasspath",
+        "projectPath" : ":lucene:monitor"
+      },
+      {
+        "configuration" : "testRuntimeClasspath",
+        "projectPath" : ":lucene:queries"
+      },
+      {
+        "configuration" : "testCompileClasspath",
+        "projectPath" : ":lucene:queryparser"
+      },
+      {
+        "configuration" : "testRuntimeClasspath",
+        "projectPath" : ":lucene:queryparser"
+      }
+    ],
     "cab355bc" : [
       {
         "configuration" : "testCompileClasspath",
@@ -2250,24 +2312,6 @@
       {
         "configuration" : "runtimeClasspath",
         "projectPath" : ":lucene:spatial-extras"
-      }
-    ],
-    "d9953130" : [
-      {
-        "configuration" : "runtimeClasspath",
-        "projectPath" : ":lucene:benchmark-jmh"
-      },
-      {
-        "configuration" : "runtimeClasspath",
-        "projectPath" : ":lucene:demo"
-      },
-      {
-        "configuration" : "compileClasspath",
-        "projectPath" : ":lucene:expressions"
-      },
-      {
-        "configuration" : "runtimeClasspath",
-        "projectPath" : ":lucene:expressions"
       }
     ],
     "e077a675" : [

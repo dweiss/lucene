@@ -24,6 +24,8 @@ dependencies {
   moduleApi project(':lucene:queries')
   moduleApi project(':lucene:sandbox')
 
+  moduleImplementation deps.antlr.runtime
+
   moduleTestImplementation project(':lucene:test-framework')
 }
 
@@ -159,83 +161,93 @@ tasks.register("regenerateSurroundQueryParser", JavaCCTask, {
   })
 })
 
-tasks.register("regenerateFlexibleStandardSyntaxParser", JavaCCTask, {
-  javaccFile = file('src/java/org/apache/lucene/queryparser/flexible/standard/parser/StandardSyntaxParser.jj')
-  description = "Regenerate flexible query parser from ${javaccFile}"
+//
+// Regenerate the antlr4 grammar of the flexible (standard) query parser.
+//
 
-  classpath = configurations.javacc
+configurations.create("antlr")
 
-  afterGenerate(commonCleanups)
+dependencies {
+  add("antlr", deps.antlr.core)
+}
 
-  afterGenerate({FileTree generatedFiles ->
-    generatedFiles.matching {include "ParseException.java"}.each {file ->
+tasks.register("regenerateFlexibleStandardSyntaxParser", {
+  description = "Regenerate flexible query parser from StandardSyntaxAntlr*.g4"
+
+  dependsOn configurations.antlr
+
+  def generatedPatterns = [
+    "**/StandardSyntaxAntlrLexer.java",
+    "**/StandardSyntaxAntlrParser.java",
+  ]
+
+  def packageName = "org.apache.lucene.queryparser.flexible.standard.parser"
+  def sourceDir = "src/java/${packageName.replace('.', '/')}"
+  // The lexer has to come first, the parser imports its token vocabulary.
+  def inputFiles = [
+    file("$sourceDir/StandardSyntaxAntlrLexer.g4"),
+    file("$sourceDir/StandardSyntaxAntlrParser.g4")
+  ]
+  def tempOutput = layout.buildDirectory.dir("antlr").get().asFile
+  def outputFiles = fileTree(dir: sourceDir, includes: generatedPatterns)
+
+  inputs.property "antlr-version", deps.antlr.core.get().version
+  inputs.files inputFiles
+  outputs.files outputFiles
+
+  doFirst {
+    buildGlobals.getFileOps().delete(tempOutput)
+    buildGlobals.getExecOps().javaexec {
+      mainClass = "org.antlr.v4.Tool"
+      classpath = configurations.antlr
+
+      ignoreExitValue = false
+      args = [
+        "-Werror",
+        "-no-listener",
+        "-no-visitor",
+        "-package",
+        packageName,
+        "-Xexact-output-dir",
+        "-o",
+        tempOutput,
+        *inputFiles
+      ]
+    }
+
+    def generatedFiles = fileTree(dir: tempOutput, includes: generatedPatterns)
+    generatedFiles.each {file ->
       buildGlobals.modifyFile(file, {text ->
-        // Modify constructor.
-        text = text.replace(
-                "class ParseException extends Exception",
-                "class ParseException extends QueryNodeParseException")
+        text = text.replaceAll("public (class StandardSyntaxAntlr\\w+)", "\$1")
+        text = text.replaceAll("// Generated from .*",
+            """
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 
-        // Modify imports.
-        text = text.replace(
-                "package org.apache.lucene.queryparser.flexible.standard.parser;", '''\
-            package org.apache.lucene.queryparser.flexible.standard.parser;
-
-            import org.apache.lucene.queryparser.flexible.core.QueryNodeParseException;
-            import org.apache.lucene.queryparser.flexible.core.messages.QueryParserMessages;
-            import org.apache.lucene.queryparser.flexible.messages.Message;
-            import org.apache.lucene.queryparser.flexible.messages.MessageImpl;
-            ''')
-
-        // Modify constructors and code bits
-        text = text.replaceAll(
-                /(?s)[ ]*public ParseException\(Token currentTokenVal[^}]+[}]/, '''\
-            public ParseException(Token currentTokenVal,
-              int[][] expectedTokenSequencesVal, String[] tokenImageVal)
-            {
-              super(new MessageImpl(QueryParserMessages.INVALID_SYNTAX, initialise(
-              currentTokenVal, expectedTokenSequencesVal, tokenImageVal)));
-              this.currentToken = currentTokenVal;
-              this.expectedTokenSequences = expectedTokenSequencesVal;
-              this.tokenImage = tokenImageVal;
-            }
-            ''')
-
-        text = text.replaceAll(
-                /(?s)[ ]*public ParseException\(String message\)[^}]+[}]/, '''\
-            public ParseException(Message message)
-            {
-              super(message);
-            }
-            ''')
-
-        text = text.replaceAll(
-                /(?s)[ ]*public ParseException\(\)[^}]+[}]/, '''\
-            public ParseException()
-            {
-              super(new MessageImpl(QueryParserMessages.INVALID_SYNTAX, "Error"));
-            }
-            ''')
+// ANTLR GENERATED CODE: DO NOT EDIT.
+""")
         return text
       })
     }
 
-    generatedFiles.matching {include "StandardSyntaxParser.java"}.each {file ->
-      buildGlobals.modifyFile(file, {text ->
-        // Remove redundant cast
-        text = text.replace(
-                "new java.util.ArrayList<int[]>",
-                "new java.util.ArrayList<>")
-        text = text.replace(
-                "new ArrayList<QueryNode>()",
-                "new ArrayList<>()")
-        text = text.replace(
-                "Collections.<QueryNode> singletonList",
-                "Collections.singletonList")
-        text = text.replace(
-                "public class StandardSyntaxParser ",
-                '@SuppressWarnings({"unused","null"}) public class StandardSyntaxParser ')
-        return text
-      })
-    }
-  })
+    buildGlobals.getFileOps().copy({CopySpec spec ->
+      spec.from(tempOutput)
+      spec.into(sourceDir)
+      spec.include(generatedPatterns)
+    })
+  }
 })

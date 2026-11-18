@@ -7,7 +7,10 @@ http://s.apache.org/luceneversions
 
 API Changes
 ---------------------
-(No changes)
+* GITHUB#XXXXX: The flexible query parser's StandardSyntaxParser is now generated with ANTLR
+  instead of JavaCC. The JavaCC-specific classes and methods in
+  org.apache.lucene.queryparser.flexible.standard.parser have been removed and the queryparser
+  module depends on antlr4-runtime. (Dawid Weiss)
 
 New Features
 ---------------------
