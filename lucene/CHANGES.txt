@@ -12,6 +12,11 @@ API Changes
   org.apache.lucene.queryparser.flexible.standard.parser have been removed and the queryparser
   module depends on antlr4-runtime. (Dawid Weiss)
 
+* GITHUB#XXXXX: The classic and surround query parsers are now generated with ANTLR instead of
+  JavaCC. The JavaCC-specific classes and methods in org.apache.lucene.queryparser.classic and
+  org.apache.lucene.queryparser.surround.parser have been removed, together with the
+  org.apache.lucene.queryparser.charstream package. (Dawid Weiss)
+
 New Features
 ---------------------
 (No changes)

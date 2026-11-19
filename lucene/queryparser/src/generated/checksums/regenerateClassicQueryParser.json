@@ -1,9 +1,8 @@
 {
-    "lucene/queryparser/src/java/org/apache/lucene/queryparser/classic/ParseException.java": "d4f22934f0f8eb7ae70f47339cf04cac297a044b",
-    "lucene/queryparser/src/java/org/apache/lucene/queryparser/classic/QueryParser.java": "96516a63f1230940ef8eb391007b255d47aa5d27",
-    "lucene/queryparser/src/java/org/apache/lucene/queryparser/classic/QueryParser.jj": "655505e6e190a9be3f4b2ec28962f61c2c4caec7",
-    "lucene/queryparser/src/java/org/apache/lucene/queryparser/classic/QueryParserConstants.java": "80d2d516553d87539dce33f732e774a67fb800ea",
-    "lucene/queryparser/src/java/org/apache/lucene/queryparser/classic/QueryParserTokenManager.java": "1263b08f33f1b5e8642f4733ea830b3b03628942",
-    "lucene/queryparser/src/java/org/apache/lucene/queryparser/classic/Token.java": "5748b8acdf890eb94fa39c9d7ac86fc35e688438",
-    "lucene/queryparser/src/java/org/apache/lucene/queryparser/classic/TokenMgrError.java": "a0082ca9014c48ede4c5aa4b84aa3c114ed8000a"
+    "lucene/queryparser/src/java/org/apache/lucene/queryparser/classic/ClassicSyntaxAntlrLexer.g4": "5d78ac465d8ab32ed18ca6d6396e74b83156f3a8",
+    "lucene/queryparser/src/java/org/apache/lucene/queryparser/classic/ClassicSyntaxAntlrLexer.java": "7bf85c1a5251f4281d1d84312bf4b504b16f2db4",
+    "lucene/queryparser/src/java/org/apache/lucene/queryparser/classic/ClassicSyntaxAntlrParser.g4": "b08ba543e9589ec87a0d7713278a67ffa6fc855d",
+    "lucene/queryparser/src/java/org/apache/lucene/queryparser/classic/ClassicSyntaxAntlrParser.java": "79b4555632c87ee054b35e1f702c055a3113231b",
+    "property:antlr-options": "[-Werror, -no-listener, -no-visitor, -package, org.apache.lucene.queryparser.classic, -Xexact-output-dir]",
+    "property:antlr-version": "4.13.2"
 }

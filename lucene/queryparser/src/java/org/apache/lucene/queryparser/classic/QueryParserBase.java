@@ -16,7 +16,6 @@
  */
 package org.apache.lucene.queryparser.classic;
 
-import java.io.StringReader;
 import java.text.DateFormat;
 import java.util.Calendar;
 import java.util.Date;
@@ -30,8 +29,6 @@ import java.util.regex.Pattern;
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.document.DateTools;
 import org.apache.lucene.index.Term;
-import org.apache.lucene.queryparser.charstream.CharStream;
-import org.apache.lucene.queryparser.charstream.FastCharStream;
 import org.apache.lucene.queryparser.classic.QueryParser.Operator;
 import org.apache.lucene.queryparser.flexible.standard.CommonQueryParserConfiguration;
 import org.apache.lucene.search.BooleanClause;
@@ -55,8 +52,8 @@ import org.apache.lucene.util.QueryBuilder;
 import org.apache.lucene.util.automaton.RegExp;
 
 /**
- * This class is overridden by QueryParser in QueryParser.jj and acts to separate the majority of
- * the Java code from the .jj grammar file.
+ * The base class of {@link QueryParser}: everything but the conversion of the query syntax's parse
+ * tree into calls to the methods of this class.
  */
 public abstract class QueryParserBase extends QueryBuilder
     implements CommonQueryParserConfiguration {
@@ -98,7 +95,6 @@ public abstract class QueryParserBase extends QueryBuilder
 
   boolean autoGeneratePhraseQueries;
 
-  // So the generated QueryParser(CharStream) won't error out
   protected QueryParserBase() {
     super(null);
   }
@@ -115,10 +111,15 @@ public abstract class QueryParserBase extends QueryBuilder
     setAutoGeneratePhraseQueries(false);
   }
 
-  // the generated parser will create these in QueryParser
-  public abstract void ReInit(CharStream stream);
-
-  public abstract Query TopLevelQuery(String field) throws ParseException;
+  /**
+   * Parses a query string, which has to be a query followed by the end of input.
+   *
+   * @param query the query string to be parsed.
+   * @param field the default field for query terms.
+   * @return the query or null if the query string yields no query (it only has stop words, for
+   *     example).
+   */
+  abstract Query parseTopLevelQuery(String query, String field) throws ParseException;
 
   /**
    * Parses a query string, returning a {@link org.apache.lucene.search.Query}.
@@ -127,12 +128,10 @@ public abstract class QueryParserBase extends QueryBuilder
    * @throws ParseException if the parsing fails
    */
   public Query parse(String query) throws ParseException {
-    ReInit(new FastCharStream(new StringReader(query)));
     try {
-      // TopLevelQuery is a Query followed by the end-of-input (EOF)
-      Query res = TopLevelQuery(field);
+      Query res = parseTopLevelQuery(query, field);
       return res != null ? res : newBooleanQuery().build();
-    } catch (ParseException | TokenMgrError tme) {
+    } catch (ParseException tme) {
       // rethrow to include the original query:
       ParseException e = new ParseException("Cannot parse '" + query + "': " + tme.getMessage());
       e.initCause(tme);
@@ -731,11 +730,10 @@ public abstract class QueryParserBase extends QueryBuilder
     return newFuzzyQuery(t, minSimilarity, fuzzyPrefixLength);
   }
 
-  // extracted from the .jj grammar
   Query handleBareTokenQuery(
       String qfield,
-      Token term,
-      Token fuzzySlop,
+      String term,
+      String fuzzySlop,
       boolean prefix,
       boolean wildcard,
       boolean fuzzy,
@@ -743,15 +741,13 @@ public abstract class QueryParserBase extends QueryBuilder
       throws ParseException {
     Query q;
 
-    String termImage = discardEscapeChar(term.image);
+    String termImage = discardEscapeChar(term);
     if (wildcard) {
-      q = getWildcardQuery(qfield, term.image);
+      q = getWildcardQuery(qfield, term);
     } else if (prefix) {
-      q =
-          getPrefixQuery(
-              qfield, discardEscapeChar(term.image.substring(0, term.image.length() - 1)));
+      q = getPrefixQuery(qfield, discardEscapeChar(term.substring(0, term.length() - 1)));
     } else if (regexp) {
-      q = getRegexpQuery(qfield, term.image.substring(1, term.image.length() - 1));
+      q = getRegexpQuery(qfield, term.substring(1, term.length() - 1));
     } else if (fuzzy) {
       q = handleBareFuzzy(qfield, fuzzySlop, termImage);
     } else {
@@ -761,21 +757,22 @@ public abstract class QueryParserBase extends QueryBuilder
   }
 
   /**
-   * Determines the similarity distance for the given fuzzy token and term string.
+   * Determines the similarity distance for the given fuzzy slop and term string.
    *
-   * <p>The default implementation uses the string image of the {@code fuzzyToken} in an attempt to
-   * parse it to a primitive float value. Otherwise, the {@linkplain #getFuzzyMinSim() minimal
+   * <p>The default implementation attempts to parse the text following the tilde in {@code
+   * fuzzySlop} to a primitive float value. Otherwise, the {@linkplain #getFuzzyMinSim() minimal
    * similarity} distance is returned. Subclasses can override this method to return a similarity
-   * distance, say based on the {@code termStr}, if the {@code fuzzyToken} does not specify a
+   * distance, say based on the {@code termStr}, if the {@code fuzzySlop} does not specify a
    * distance.
    *
-   * @param fuzzyToken The Fuzzy token
+   * @param fuzzySlop The fuzzy slop as it appeared in the query, including the leading tilde (for
+   *     example {@code ~0.8} or just {@code ~})
    * @param termStr The Term string
    * @return The similarity distance
    */
-  protected float getFuzzyDistance(Token fuzzyToken, String termStr) {
+  protected float getFuzzyDistance(String fuzzySlop, String termStr) {
     try {
-      return Float.parseFloat(fuzzyToken.image.substring(1));
+      return Float.parseFloat(fuzzySlop.substring(1));
     } catch (
         @SuppressWarnings("unused")
         Exception ignored) {
@@ -783,7 +780,7 @@ public abstract class QueryParserBase extends QueryBuilder
     return fuzzyMinSim;
   }
 
-  Query handleBareFuzzy(String qfield, Token fuzzySlop, String termImage) throws ParseException {
+  Query handleBareFuzzy(String qfield, String fuzzySlop, String termImage) throws ParseException {
     float fms = getFuzzyDistance(fuzzySlop, termImage);
     if (fms < 0.0f) {
       throw new ParseException(
@@ -794,27 +791,24 @@ public abstract class QueryParserBase extends QueryBuilder
     return getFuzzyQuery(qfield, termImage, fms);
   }
 
-  // extracted from the .jj grammar
-  Query handleQuotedTerm(String qfield, Token term, Token fuzzySlop) throws ParseException {
+  Query handleQuotedTerm(String qfield, String term, String fuzzySlop) throws ParseException {
     int s = phraseSlop; // default
     if (fuzzySlop != null) {
       try {
-        s = (int) Float.parseFloat(fuzzySlop.image.substring(1));
+        s = (int) Float.parseFloat(fuzzySlop.substring(1));
       } catch (
           @SuppressWarnings("unused")
           Exception ignored) {
       }
     }
-    return getFieldQuery(
-        qfield, discardEscapeChar(term.image.substring(1, term.image.length() - 1)), s);
+    return getFieldQuery(qfield, discardEscapeChar(term.substring(1, term.length() - 1)), s);
   }
 
-  // extracted from the .jj grammar
-  Query handleBoost(Query q, Token boost) {
+  Query handleBoost(Query q, String boost) {
     if (boost != null) {
       float f = (float) 1.0;
       try {
-        f = Float.parseFloat(boost.image);
+        f = Float.parseFloat(boost);
       } catch (
           @SuppressWarnings("unused")
           Exception ignored) {

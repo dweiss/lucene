@@ -18,6 +18,8 @@ package org.apache.lucene.queryparser.surround.query;
 
 import junit.framework.TestSuite;
 import junit.textui.TestRunner;
+import org.apache.lucene.queryparser.surround.parser.ParseException;
+import org.apache.lucene.queryparser.surround.parser.QueryParser;
 import org.apache.lucene.tests.util.LuceneTestCase;
 
 public class Test01Exceptions extends LuceneTestCase {
@@ -61,5 +63,20 @@ public class Test01Exceptions extends LuceneTestCase {
     if (m.length() > 0) {
       fail("No ParseException for:\n" + m);
     }
+  }
+
+  public void testSyntaxErrorMessage() {
+    ParseException e = expectThrows(ParseException.class, () -> QueryParser.parse("a OR b)"));
+    assertTrue(e.getMessage(), e.getMessage().startsWith("Syntax error at line 1, column 7: "));
+
+    // Lexer errors.
+    e = expectThrows(ParseException.class, () -> QueryParser.parse("a^b"));
+    assertTrue(e.getMessage(), e.getMessage().startsWith("Syntax error at line 1, column 3: "));
+  }
+
+  public void testDeeplyNestedQuery() {
+    String query = "(".repeat(100_000) + "a" + ")".repeat(100_000);
+    ParseException e = expectThrows(ParseException.class, () -> QueryParser.parse(query));
+    assertEquals("The query is nested too deeply.", e.getMessage());
   }
 }

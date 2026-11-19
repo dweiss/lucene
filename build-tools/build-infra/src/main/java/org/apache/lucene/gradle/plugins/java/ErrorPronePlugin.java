@@ -960,20 +960,12 @@ public class ErrorPronePlugin extends LuceneGradlePlugin {
                         ".*/WordBreakTestUnicode_9_0_0.java");
                 case ":lucene:queryparser" ->
                     List.of(
-                        ".*/classic/ParseException.java",
-                        ".*/classic/QueryParser.java",
-                        ".*/classic/QueryParserConstants.java",
-                        ".*/classic/QueryParserTokenManager.java",
-                        ".*/classic/Token.java",
-                        ".*/classic/TokenMgrError.java",
+                        ".*/classic/ClassicSyntaxAntlrLexer.java",
+                        ".*/classic/ClassicSyntaxAntlrParser.java",
                         ".*/standard/parser/StandardSyntaxAntlrLexer.java",
                         ".*/standard/parser/StandardSyntaxAntlrParser.java",
-                        ".*/surround/parser/ParseException.java",
-                        ".*/surround/parser/QueryParser.java",
-                        ".*/surround/parser/QueryParserConstants.java",
-                        ".*/surround/parser/QueryParserTokenManager.java",
-                        ".*/surround/parser/Token.java",
-                        ".*/surround/parser/TokenMgrError.java");
+                        ".*/surround/parser/SurroundSyntaxAntlrLexer.java",
+                        ".*/surround/parser/SurroundSyntaxAntlrParser.java");
                 default -> List.of();
               };
 

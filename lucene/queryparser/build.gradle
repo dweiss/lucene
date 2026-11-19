@@ -15,8 +15,6 @@
  * limitations under the License.
  */
 
-import org.apache.lucene.gradle.plugins.regenerate.JavaCCTask
-
 description = 'Query parsers and parsing framework'
 
 dependencies {
@@ -30,139 +28,7 @@ dependencies {
 }
 
 //
-// This adds regeneration of javacc-generated sources
-//
-
-def commonCleanups = { FileTree generatedFiles ->
-  // This is a minor typo in a comment that nonetheless people have hand-corrected in the past.
-  generatedFiles.matching({include "CharStream.java"}).each {file ->
-    buildGlobals.modifyFile(file, {text ->
-      return text.replace(
-              "implemetation", // spellchecker:disable-line
-              "implementation");
-    })
-  }
-
-  generatedFiles.each {file ->
-    buildGlobals.modifyFile(file, {text ->
-      // Normalize EOLs and tabs (EOLs are a side-effect of modifyFile).
-      text = text.replace("\t", "    ");
-      text = text.replaceAll("JavaCC - OriginalChecksum=[^*]+", "(filtered)")
-      text = text.replace("StringBuffer", "StringBuilder")
-      return text
-    })
-  }
-
-  generatedFiles.matching({include "*TokenManager.java"}).each {file ->
-    buildGlobals.modifyFile(file, {text ->
-      // Remove redundant imports.
-      text = text.replaceAll(
-              /(?m)^import .+/,
-              "")
-      // Add CharStream imports.
-      text = text.replaceAll(
-              /package (.+)/,
-              '''
-          package $1
-          import org.apache.lucene.queryparser.charstream.CharStream;
-          '''.trim())
-      // Eliminates redundant cast message.
-      text = text.replace(
-              "int hiByte = (int)(curChar >> 8);",
-              "int hiByte = curChar >> 8;")
-      // Access to forbidden APIs.
-      text = text.replace(
-              "public  java.io.PrintStream debugStream = System.out;",
-              "// (debugStream omitted).")
-      text = text.replace(
-              "public  void setDebugStream(java.io.PrintStream ds) { debugStream = ds; }",
-              "// (setDebugStream omitted).")
-      // Remove dangling doc comments
-      text = text.replace(
-              "/** Debug output. */",
-              "// Debug output.")
-      text = text.replace(
-              "/** Set debug output. */",
-              "// Set debug output.")
-      return text
-    })
-  }
-}
-
-configurations.create("javacc")
-
-dependencies {
-  add("javacc", deps.javacc)
-}
-
-tasks.withType(JavaCCTask).configureEach {
-  classpath = configurations.javacc
-}
-
-tasks.register("regenerateClassicQueryParser", JavaCCTask, {
-  javaccFile = file('src/java/org/apache/lucene/queryparser/classic/QueryParser.jj')
-  description = "Regenerate classic query parser from ${javaccFile}"
-
-  afterGenerate(commonCleanups)
-  afterGenerate({ FileTree generatedFiles ->
-    generatedFiles.matching {include "QueryParser.java"}.each {file ->
-      buildGlobals.modifyFile(file, {text ->
-        text = text.replace(
-                "public QueryParser(CharStream ",
-                "protected QueryParser(CharStream ")
-        text = text.replace(
-                "public QueryParser(QueryParserTokenManager ",
-                "protected QueryParser(QueryParserTokenManager ")
-        text = text.replace(
-                "new java.util.ArrayList<int[]>",
-                "new java.util.ArrayList<>")
-        text = text.replace(
-                "final private LookaheadSuccess jj_ls =",
-                "static final private LookaheadSuccess jj_ls =")
-        text = text.replace(
-                "public class QueryParser ",
-                '@SuppressWarnings({"unused","null"}) public class QueryParser ')
-        text = text.replace(
-                "final public Query TopLevelQuery(",
-                "@Override final public Query TopLevelQuery(")
-        text = text.replace(
-                "public void ReInit(CharStream ",
-                "@Override public void ReInit(CharStream ")
-        return text
-      })
-    }
-  })
-})
-
-
-tasks.register("regenerateSurroundQueryParser", JavaCCTask, {
-  javaccFile = file('src/java/org/apache/lucene/queryparser/surround/parser/QueryParser.jj')
-  description = "Regenerate surround query parser from ${javaccFile}"
-
-  classpath = configurations.javacc
-
-  afterGenerate(commonCleanups)
-
-  afterGenerate({FileTree generatedFiles ->
-    generatedFiles.matching {include "QueryParser.java"}.each {file ->
-      buildGlobals.modifyFile(file, {text ->
-        text = text.replace(
-                "import org.apache.lucene.analysis.TokenStream;",
-                "")
-        text = text.replace(
-                "new java.util.ArrayList<int[]>",
-                "new java.util.ArrayList<>")
-        text = text.replace(
-                "public class QueryParser ",
-                '@SuppressWarnings({"unused","null"}) public class QueryParser ')
-        return text
-      })
-    }
-  })
-})
-
-//
-// Regenerate the antlr4 grammar of the flexible (standard) query parser.
+// Regenerate the antlr4 grammars of query parsers.
 //
 
 configurations.create("antlr")
@@ -171,56 +37,64 @@ dependencies {
   add("antlr", deps.antlr.core)
 }
 
-tasks.register("regenerateFlexibleStandardSyntaxParser", {
-  description = "Regenerate flexible query parser from StandardSyntaxAntlr*.g4"
+// Registers a task regenerating a pair of grammars (${grammarName}Lexer.g4, ${grammarName}Parser.g4)
+// located in the given package.
+def registerAntlrTask = { String taskName, String packageName, String grammarName ->
+  tasks.register(taskName, {
+    description = "Regenerate ${grammarName}{Lexer,Parser}.java from the corresponding *.g4 grammars"
 
-  dependsOn configurations.antlr
+    dependsOn configurations.antlr
 
-  def generatedPatterns = [
-    "**/StandardSyntaxAntlrLexer.java",
-    "**/StandardSyntaxAntlrParser.java",
-  ]
+    def generatedPatterns = [
+      "**/${grammarName}Lexer.java",
+      "**/${grammarName}Parser.java",
+    ]
 
-  def packageName = "org.apache.lucene.queryparser.flexible.standard.parser"
-  def sourceDir = "src/java/${packageName.replace('.', '/')}"
-  // The lexer has to come first, the parser imports its token vocabulary.
-  def inputFiles = [
-    file("$sourceDir/StandardSyntaxAntlrLexer.g4"),
-    file("$sourceDir/StandardSyntaxAntlrParser.g4")
-  ]
-  def tempOutput = layout.buildDirectory.dir("antlr").get().asFile
-  def outputFiles = fileTree(dir: sourceDir, includes: generatedPatterns)
+    def sourceDir = "src/java/${packageName.replace('.', '/')}"
+    // The lexer has to come first, the parser imports its token vocabulary.
+    def inputFiles = [
+      file("$sourceDir/${grammarName}Lexer.g4"),
+      file("$sourceDir/${grammarName}Parser.g4")
+    ]
+    def tempOutput = layout.buildDirectory.dir("antlr/${taskName}").get().asFile
+    def outputFiles = fileTree(dir: sourceDir, includes: generatedPatterns)
 
-  inputs.property "antlr-version", deps.antlr.core.get().version
-  inputs.files inputFiles
-  outputs.files outputFiles
+    def antlrOptions = [
+      "-Werror",
+      "-no-listener",
+      "-no-visitor",
+      "-package",
+      packageName,
+      "-Xexact-output-dir",
+    ]
 
-  doFirst {
-    buildGlobals.getFileOps().delete(tempOutput)
-    buildGlobals.getExecOps().javaexec {
-      mainClass = "org.antlr.v4.Tool"
-      classpath = configurations.antlr
+    inputs.property "antlr-version", deps.antlr.core.get().version
+    inputs.property "antlr-options", antlrOptions
+    inputs.files inputFiles
+    outputs.files outputFiles
 
-      ignoreExitValue = false
-      args = [
-        "-Werror",
-        "-no-listener",
-        "-no-visitor",
-        "-package",
-        packageName,
-        "-Xexact-output-dir",
-        "-o",
-        tempOutput,
-        *inputFiles
-      ]
-    }
+    doFirst {
+      buildGlobals.getFileOps().delete(tempOutput)
+      buildGlobals.getExecOps().javaexec {
+        mainClass = "org.antlr.v4.Tool"
+        classpath = configurations.antlr
 
-    def generatedFiles = fileTree(dir: tempOutput, includes: generatedPatterns)
-    generatedFiles.each {file ->
-      buildGlobals.modifyFile(file, {text ->
-        text = text.replaceAll("public (class StandardSyntaxAntlr\\w+)", "\$1")
-        text = text.replaceAll("// Generated from .*",
-            """
+        ignoreExitValue = false
+        args = [
+          *antlrOptions,
+          "-o",
+          tempOutput,
+          *inputFiles
+        ]
+      }
+
+      def generatedFiles = fileTree(dir: tempOutput, includes: generatedPatterns)
+      generatedFiles.each {file ->
+        buildGlobals.modifyFile(file, {text ->
+          // The generated classes are an implementation detail.
+          text = text.replaceAll("public (class ${grammarName}\\w+)", "\$1")
+          text = text.replaceAll("// Generated from .*",
+              """
 /*
  * Licensed to the Apache Software Foundation (ASF) under one or more
  * contributor license agreements.  See the NOTICE file distributed with
@@ -240,14 +114,30 @@ tasks.register("regenerateFlexibleStandardSyntaxParser", {
 
 // ANTLR GENERATED CODE: DO NOT EDIT.
 """)
-        return text
+          return text
+        })
+      }
+
+      buildGlobals.getFileOps().copy({CopySpec spec ->
+        spec.from(tempOutput)
+        spec.into(sourceDir)
+        spec.include(generatedPatterns)
       })
     }
+  })
+}
 
-    buildGlobals.getFileOps().copy({CopySpec spec ->
-      spec.from(tempOutput)
-      spec.into(sourceDir)
-      spec.include(generatedPatterns)
-    })
-  }
-})
+registerAntlrTask(
+    "regenerateClassicQueryParser",
+    "org.apache.lucene.queryparser.classic",
+    "ClassicSyntaxAntlr")
+
+registerAntlrTask(
+    "regenerateSurroundQueryParser",
+    "org.apache.lucene.queryparser.surround.parser",
+    "SurroundSyntaxAntlr")
+
+registerAntlrTask(
+    "regenerateFlexibleStandardSyntaxParser",
+    "org.apache.lucene.queryparser.flexible.standard.parser",
+    "StandardSyntaxAntlr")

@@ -16,14 +16,7 @@
  */
 
 /**
- * A simple query parser implemented with JavaCC.
- *
- * <p>Note that JavaCC defines lots of public classes, methods and fields that do not need to be
- * public.&nbsp; These clutter the documentation.&nbsp; Sorry.
- *
- * <p>Note that because JavaCC defines a class named <code>Token</code>, <code>
- * org.apache.lucene.analysis.Token</code> must always be fully qualified in source code in this
- * package.
+ * A simple query parser; its syntax is defined by an ANTLR grammar.
  *
  * <p><b>NOTE</b>: {@link org.apache.lucene.queryparser.flexible.standard} has an alternative
  * queryparser that matches the syntax of this one, but is more modular, enabling substantial
@@ -69,7 +62,7 @@
  *
  * <p>Although Lucene provides the ability to create your own queries through its API, it also
  * provides a rich query language through the Query Parser, a lexer which interprets a string into a
- * Lucene Query using JavaCC.
+ * Lucene Query.
  *
  * <p>Generally, the query parser syntax may change from release to release. This page describes the
  * syntax as of the current release. If you are using a different version of Lucene, please consult

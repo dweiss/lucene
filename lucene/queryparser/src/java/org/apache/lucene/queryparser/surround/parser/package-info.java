@@ -16,7 +16,7 @@
  */
 
 /**
- * This package contains the QueryParser.jj source file for the Surround parser.
+ * This package contains the Surround parser and the ANTLR grammars of its syntax.
  *
  * <p>Parsing the text of a query results in a SrndQuery in the
  * org.apache.lucene.queryparser.surround.query package.

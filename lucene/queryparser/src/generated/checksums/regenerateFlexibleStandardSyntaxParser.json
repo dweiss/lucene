@@ -3,5 +3,6 @@
     "lucene/queryparser/src/java/org/apache/lucene/queryparser/flexible/standard/parser/StandardSyntaxAntlrLexer.java": "7402b4fc181b6274a975de0bd92a92947d6ff2e9",
     "lucene/queryparser/src/java/org/apache/lucene/queryparser/flexible/standard/parser/StandardSyntaxAntlrParser.g4": "995f2f6cb3987dfccc88ec34bae03f20773854e3",
     "lucene/queryparser/src/java/org/apache/lucene/queryparser/flexible/standard/parser/StandardSyntaxAntlrParser.java": "9d151bb98a91e4386ae5a3faa8e5d38f44bf0288",
+    "property:antlr-options": "[-Werror, -no-listener, -no-visitor, -package, org.apache.lucene.queryparser.flexible.standard.parser, -Xexact-output-dir]",
     "property:antlr-version": "4.13.2"
 }

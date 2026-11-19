@@ -26,6 +26,38 @@ The constructor `HnswGraphSearcher(NeighborQueue, BitSet)` is now
 `VisitedSet`. This interface has the `set`, `getAndSet` and `clear` methods of `BitSet`; create one
 with `VisitedSet.create(expectedVisitedNodes, graphSize)`.
 
+### Classic and surround query parsers are generated with ANTLR instead of JavaCC
+
+The syntax accepted by the classic `QueryParser` (and its subclasses) and by the surround
+`QueryParser` has not changed, but both parsers are now implemented with ANTLR. JavaCC is no longer
+used anywhere in Lucene.
+
+The JavaCC-specific API has been removed:
+
+- The `org.apache.lucene.queryparser.charstream` package (`CharStream`, `FastCharStream`).
+- `Token`, `TokenMgrError`, `QueryParserConstants` and `QueryParserTokenManager` in
+  `org.apache.lucene.queryparser.classic` and `org.apache.lucene.queryparser.surround.parser`.
+- The constructors of both `QueryParser` classes taking a `CharStream` or a token manager, and the
+  generated methods and fields (`ReInit`, `TopLevelQuery`, `Query`, `Clause`, `Term`, `getToken`,
+  `getNextToken`, `token_source`, `generateParseException` and so on). `QueryParserBase` no longer
+  declares `ReInit` and `TopLevelQuery`. Use `QueryParser#parse(String)` (classic) and
+  `QueryParser#parse(String)` or `QueryParser#parse2(String)` (surround).
+- `ParseException` in both packages only has the no-argument and the `String` constructors; the
+  `currentToken`, `expectedTokenSequences` and `tokenImage` fields are gone.
+- Methods that subclasses can override and that took a `Token` now take the token's text (what
+  used to be `Token#image`) as a `String`: `QueryParserBase#getFuzzyDistance(String, String)` in
+  the classic parser; `getOrQuery`, `getAndQuery`, `getNotQuery` and `getDistanceQuery` in the
+  surround parser. The type of the token and its position in the query string are no longer
+  available to these methods.
+
+Other changes in behavior:
+
+- The query string is parsed in full before any of the methods that create queries
+  (`getFieldQuery`, `getRangeQuery` and so on) are called. A query string with a syntax error
+  always fails with a `ParseException` and no such method is called for it.
+- The messages of syntax errors are different.
+- A query nested too deeply fails with a `ParseException` instead of a `StackOverflowError`.
+
 ### StandardSyntaxParser is generated with ANTLR instead of JavaCC
 
 The syntax accepted by the flexible query parser's `StandardSyntaxParser` has not changed, but the

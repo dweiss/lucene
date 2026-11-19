@@ -30,7 +30,6 @@ import org.apache.lucene.document.FieldType;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexOptions;
 import org.apache.lucene.index.Term;
-import org.apache.lucene.queryparser.charstream.CharStream;
 import org.apache.lucene.queryparser.classic.QueryParser.Operator;
 import org.apache.lucene.queryparser.flexible.standard.CommonQueryParserConfiguration;
 import org.apache.lucene.queryparser.util.QueryParserTestBase;
@@ -146,23 +145,37 @@ public class TestQueryParser extends QueryParserTestBase {
     assertEquals(QueryParserBase.OR_OPERATOR, qp.getDefaultOperator());
   }
 
-  // LUCENE-2002: when we run javacc to regen QueryParser,
-  // we also run a replaceregexp step to fix 2 of the public
-  // ctors (change them to protected):
-  //
-  // protected QueryParser(CharStream stream)
-  //
-  // protected QueryParser(QueryParserTokenManager tm)
-  //
-  // This test is here as a safety, in case that ant step
-  // doesn't work for some reason.
-  @SuppressWarnings("rawtype")
-  public void testProtectedCtors() throws Exception {
-    expectThrows(
-        NoSuchMethodException.class, () -> QueryParser.class.getConstructor(CharStream.class));
-    expectThrows(
-        NoSuchMethodException.class,
-        () -> QueryParser.class.getConstructor(QueryParserTokenManager.class));
+  public void testSyntaxErrorMessage() {
+    QueryParser qp = new QueryParser(FIELD, new MockAnalyzer(random()));
+    ParseException e = expectThrows(ParseException.class, () -> qp.parse("foo AND (bar"));
+    assertTrue(
+        e.getMessage(),
+        e.getMessage()
+            .startsWith("Cannot parse 'foo AND (bar': Syntax error at line 1, column 13: "));
+
+    // Lexer errors.
+    e = expectThrows(ParseException.class, () -> qp.parse("foo^bar"));
+    assertTrue(
+        e.getMessage(),
+        e.getMessage().startsWith("Cannot parse 'foo^bar': Syntax error at line 1, column 5: "));
+  }
+
+  public void testSyntaxErrorPrecedesQueryCreation() {
+    QueryParser qp =
+        new QueryParser(FIELD, new MockAnalyzer(random())) {
+          @Override
+          protected Query getFieldQuery(String field, String queryText, boolean quoted) {
+            throw new AssertionError("Should not be called.");
+          }
+        };
+    expectThrows(ParseException.class, () -> qp.parse("foo bar)"));
+  }
+
+  public void testDeeplyNestedQuery() {
+    QueryParser qp = new QueryParser(FIELD, new MockAnalyzer(random()));
+    String query = "(".repeat(100_000) + "foo" + ")".repeat(100_000);
+    ParseException e = expectThrows(ParseException.class, () -> qp.parse(query));
+    assertTrue(e.getMessage(), e.getMessage().endsWith("The query is nested too deeply."));
   }
 
   public void testFuzzySlopeExtendability() throws ParseException {
@@ -170,13 +183,13 @@ public class TestQueryParser extends QueryParserTestBase {
         new QueryParser("a", new MockAnalyzer(random(), MockTokenizer.WHITESPACE, false)) {
 
           @Override
-          Query handleBareFuzzy(String qfield, Token fuzzySlop, String termImage)
+          Query handleBareFuzzy(String qfield, String fuzzySlop, String termImage)
               throws ParseException {
 
-            if (fuzzySlop.image.endsWith("€")) {
+            if (fuzzySlop.endsWith("€")) {
               float fms = fuzzyMinSim;
               try {
-                fms = Float.parseFloat(fuzzySlop.image.substring(1, fuzzySlop.image.length() - 1));
+                fms = Float.parseFloat(fuzzySlop.substring(1, fuzzySlop.length() - 1));
               } catch (
                   @SuppressWarnings("unused")
                   Exception ignored) {
@@ -199,9 +212,9 @@ public class TestQueryParser extends QueryParserTestBase {
     QueryParser qp =
         new QueryParser("a", new MockAnalyzer(random(), MockTokenizer.WHITESPACE, false)) {
           @Override
-          protected float getFuzzyDistance(Token fuzzySlop, String termStr) {
+          protected float getFuzzyDistance(String fuzzySlop, String termStr) {
             try {
-              return Float.parseFloat(fuzzySlop.image.substring(1));
+              return Float.parseFloat(fuzzySlop.substring(1));
             } catch (
                 @SuppressWarnings("unused")
                 Exception ignored) {
@@ -215,7 +228,7 @@ public class TestQueryParser extends QueryParserTestBase {
     QueryParser qp2 =
         new QueryParser("a", new MockAnalyzer(random(), MockTokenizer.WHITESPACE, false)) {
           @Override
-          protected float getFuzzyDistance(Token fuzzySlop, String termStr) {
+          protected float getFuzzyDistance(String fuzzySlop, String termStr) {
             return termStr.length(); // distance based on the term length
           }
         };
